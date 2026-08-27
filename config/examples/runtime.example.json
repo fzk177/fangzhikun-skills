@@ -6,6 +6,9 @@
     "account": "your-account",
     "keychainService": "zentao-cli"
   },
+  "skillManager": {
+    "repository": "/absolute/path/to/fangzhikun-skills"
+  },
   "logSearch": {
     "dev": {
       "sshAlias": "example-dev",

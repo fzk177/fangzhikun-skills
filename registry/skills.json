@@ -29,6 +29,13 @@
       "target": "codex",
       "dependencies": []
     },
+    "skill-manager": {
+      "version": "1.0.0",
+      "ownership": "first-party",
+      "source": "skills/skill-manager",
+      "target": "codex",
+      "dependencies": []
+    },
     "zentao-debug": {
       "version": "1.0.0",
       "ownership": "first-party",

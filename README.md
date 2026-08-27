@@ -29,13 +29,24 @@
 ## 使用方式
 
 ```bash
-./tools/skillctl status
+./tools/skillctl status --all
 ./tools/skillctl validate --all
 ./tools/skillctl doctor
 ./tools/skillctl deploy zentao-debug
 ./tools/skillctl deploy --all
 ./tools/skillctl rollback zentao-debug
 ```
+
+不熟悉命令行时，可以在新会话中使用自然语言管理入口：
+
+```text
+$skill-manager 查看所有 Skill 状态
+$skill-manager 更新 log-search
+$skill-manager 校验并部署 zentao-task
+$skill-manager 回滚 zentao-debug
+```
+
+`skill-manager` 只负责理解目标、展示差异和组织确认，底层仍调用 `skillctl`。Git 提交、GitHub 推送、本机部署和回滚不会相互推导授权。
 
 安装目录出现未被部署记录覆盖的人工修改时，部署会停止。先执行：
 

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Skill 管理"
+  short_description: "用自然语言维护、校验、发布、部署和回滚自研 Skill"
+  default_prompt: "使用 $skill-manager 查看自研 Skill 状态，或按受控流程更新、提交、推送、部署和回滚指定 Skill。"
+
+policy:
+  allow_implicit_invocation: false
