@@ -1,0 +1,7 @@
+interface:
+  display_name: "ZenTao Bug 调试"
+  short_description: "读取禅道 Bug，结合代码、日志与数据库证据定位问题"
+  default_prompt: "使用 $zentao-debug 读取指定 Bug，结合当前前后端代码分析根因；必要时调用只读日志和数据库查询补充证据。"
+
+policy:
+  allow_implicit_invocation: false

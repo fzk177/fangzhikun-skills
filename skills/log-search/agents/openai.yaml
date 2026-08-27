@@ -1,0 +1,7 @@
+interface:
+  display_name: "日志查询分析"
+  short_description: "在 dev、pre 和生产环境中执行只读日志查询并分析问题根因"
+  default_prompt: "使用 $log-search 查询指定环境的日志并分析问题根因。"
+
+policy:
+  allow_implicit_invocation: false

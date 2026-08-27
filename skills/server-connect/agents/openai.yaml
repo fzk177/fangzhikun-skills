@@ -1,0 +1,7 @@
+interface:
+  display_name: "服务器连接与排障"
+  short_description: "通过已登记别名连接服务器并排查服务故障"
+  default_prompt: "使用 $server-connect 连接指定服务器，先执行只读诊断并分析故障原因。"
+
+policy:
+  allow_implicit_invocation: false

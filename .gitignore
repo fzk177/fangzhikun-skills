@@ -1,0 +1,20 @@
+.DS_Store
+*.log
+*.tmp
+*.bak
+*.swp
+
+# 本机真实配置、部署状态与备份永不进入 Git
+config/local/
+.skillctl/
+
+# 查询和调试产生的临时资料
+attachments/
+bug-*.json
+bug-*-actions.jsonl
+inline-files.tsv
+
+# 常见语言缓存
+__pycache__/
+*.pyc
+node_modules/

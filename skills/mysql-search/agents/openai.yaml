@@ -1,0 +1,7 @@
+interface:
+  display_name: "MySQL 只读查询"
+  short_description: "按 dev、pre、prod 环境安全查询 MySQL 8.0 数据"
+  default_prompt: "使用 $mysql-search 在指定环境执行只读数据库查询并分析结果。"
+
+policy:
+  allow_implicit_invocation: false

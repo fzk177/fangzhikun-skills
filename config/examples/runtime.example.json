@@ -1,0 +1,46 @@
+{
+  "zentao": {
+    "cli": "/absolute/path/to/zentao",
+    "config": "/absolute/path/to/zentao.json",
+    "server": "https://zentao.example.com",
+    "account": "your-account",
+    "keychainService": "zentao-cli"
+  },
+  "logSearch": {
+    "dev": {
+      "sshAlias": "example-dev",
+      "root": "/srv/apps"
+    },
+    "sls": {
+      "pre": {
+        "aliases": ["pre"],
+        "project": "example-pre-project",
+        "logstore": "example-pre-logstore"
+      },
+      "prod": {
+        "aliases": ["prod", "production", "生产"],
+        "project": "example-prod-project",
+        "logstore": "example-prod-logstore"
+      }
+    }
+  },
+  "paths": {
+    "vault": "/absolute/path/to/obsidian-vault",
+    "frontendRepository": "/absolute/path/to/frontend",
+    "backendRepositories": [
+      "/absolute/path/to/backend"
+    ]
+  },
+  "prototype": {
+    "chrome": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "keychainService": "prototype-platform"
+  },
+  "zentaoProjectManager": {
+    "iterationThemeRules": [
+      {
+        "label": "示例主题",
+        "pattern": "示例关键词|另一个关键词"
+      }
+    ]
+  }
+}

@@ -1,0 +1,613 @@
+#!/usr/bin/env python3
+
+"""个人 Skill 的校验、部署、差异检查和回滚工具。"""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import datetime as datetime_module
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
+REGISTRY_PATH = REPOSITORY_ROOT / "registry" / "skills.json"
+SAFETY_PATTERNS_PATH = REPOSITORY_ROOT / "checks" / "public-safety.patterns"
+TEXT_SUFFIXES = {".md", ".json", ".yaml", ".yml", ".sh", ".js", ".py", ".txt"}
+
+
+def load_registry() -> dict:
+    """读取并返回 Skill 注册表。"""
+
+    with REGISTRY_PATH.open("r", encoding="utf-8") as registry_file:
+        registry = json.load(registry_file)
+
+    if registry.get("schemaVersion") != 1 or not isinstance(registry.get("skills"), dict):
+        raise RuntimeError("registry/skills.json 结构不合法")
+
+    return registry
+
+
+def state_root() -> Path:
+    """返回部署状态目录，不在源码仓库中保存机器状态。"""
+
+    configured_root = os.environ.get("XDG_STATE_HOME")
+    if configured_root:
+        return Path(configured_root).expanduser() / "fangzhikun-skills"
+    return Path.home() / ".local" / "state" / "fangzhikun-skills"
+
+
+def install_root(target: str) -> Path:
+    """根据注册目标返回 Skill 安装根目录。"""
+
+    if target == "codex":
+        codex_home = os.environ.get("CODEX_HOME")
+        return (Path(codex_home).expanduser() if codex_home else Path.home() / ".codex") / "skills"
+    if target == "agents":
+        agents_home = os.environ.get("AGENTS_HOME")
+        return (Path(agents_home).expanduser() if agents_home else Path.home() / ".agents") / "skills"
+    raise RuntimeError(f"不支持的部署目标：{target}")
+
+
+def source_path(metadata: dict) -> Path:
+    """解析并验证注册表中的源码路径。"""
+
+    path_value = (REPOSITORY_ROOT / metadata["source"]).resolve()
+    try:
+        path_value.relative_to(REPOSITORY_ROOT)
+    except ValueError as error:
+        raise RuntimeError("Skill 源码路径逃逸出仓库") from error
+    return path_value
+
+
+def files_in(directory: Path) -> list[Path]:
+    """按稳定顺序收集普通文件，不跟随目录软链接。"""
+
+    return sorted(
+        path_value
+        for path_value in directory.rglob("*")
+        if path_value.is_file() and ".git" not in path_value.parts
+    )
+
+
+def sha256_file(path_value: Path) -> str:
+    """计算单个文件的 SHA-256。"""
+
+    digest = hashlib.sha256()
+    with path_value.open("rb") as source_file:
+        for chunk in iter(lambda: source_file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def manifest(directory: Path) -> dict[str, str]:
+    """生成目录中文件相对路径到哈希的映射。"""
+
+    if not directory.is_dir():
+        return {}
+    return {
+        path_value.relative_to(directory).as_posix(): sha256_file(path_value)
+        for path_value in files_in(directory)
+    }
+
+
+def state_path(skill_name: str) -> Path:
+    """返回单个 Skill 的部署状态文件。"""
+
+    return state_root() / "deployments" / f"{skill_name}.json"
+
+
+def read_state(skill_name: str) -> dict:
+    """读取部署状态；尚未部署时返回空字典。"""
+
+    path_value = state_path(skill_name)
+    if not path_value.is_file():
+        return {}
+    with path_value.open("r", encoding="utf-8") as state_file:
+        return json.load(state_file)
+
+
+def write_json_atomic(path_value: Path, data: dict) -> None:
+    """使用同目录临时文件原子写入 JSON。"""
+
+    path_value.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path_value.name}.", dir=path_value.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as temporary_file:
+            json.dump(data, temporary_file, ensure_ascii=False, indent=2)
+            temporary_file.write("\n")
+        os.chmod(temporary_name, 0o600)
+        os.replace(temporary_name, path_value)
+    finally:
+        if os.path.exists(temporary_name):
+            os.unlink(temporary_name)
+
+
+def registered_names(registry: dict) -> list[str]:
+    """返回稳定排序后的已登记 Skill 名称。"""
+
+    names = []
+    for skill_name, metadata in registry["skills"].items():
+        names.append(skill_name)
+    return sorted(names)
+
+
+def select_names(args: argparse.Namespace, registry: dict) -> list[str]:
+    """解析单个名称或 --all，并验证名称存在。"""
+
+    if getattr(args, "all", False):
+        return registered_names(registry)
+    if not getattr(args, "skill", None):
+        raise RuntimeError("必须提供 Skill 名称或 --all")
+    if args.skill not in registry["skills"]:
+        raise RuntimeError(f"未登记的 Skill：{args.skill}")
+    return [args.skill]
+
+
+def frontmatter(skill_file: Path) -> dict[str, str]:
+    """读取 SKILL.md 顶部简单 YAML Frontmatter。"""
+
+    lines = skill_file.read_text(encoding="utf-8").splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {}
+    result = {}
+    for line in lines[1:]:
+        if line.strip() == "---":
+            return result
+        key, separator, value = line.partition(":")
+        if separator:
+            result[key.strip()] = value.strip().strip('"')
+    return {}
+
+
+def load_safety_patterns() -> list[re.Pattern[str]]:
+    """加载公开安全扫描正则。"""
+
+    patterns = []
+    for line in SAFETY_PATTERNS_PATH.read_text(encoding="utf-8").splitlines():
+        value = line.strip()
+        if value and not value.startswith("#"):
+            patterns.append(re.compile(value))
+    return patterns
+
+
+def validate_markdown_links(path_value: Path, source_directory: Path) -> list[str]:
+    """检查 Markdown 中指向包内文件的相对链接。"""
+
+    errors = []
+    content = path_value.read_text(encoding="utf-8")
+    for match in re.finditer(r"\[[^\]]+\]\(([^)]+)\)", content):
+        target = match.group(1).split("#", 1)[0]
+        if not target or "://" in target or target.startswith("#") or target.startswith("/"):
+            continue
+        resolved = (path_value.parent / target).resolve()
+        try:
+            resolved.relative_to(REPOSITORY_ROOT.resolve())
+        except ValueError:
+            errors.append(f"{path_value}: 相对链接逃逸出仓库：{target}")
+            continue
+        if not resolved.exists():
+            errors.append(f"{path_value}: 引用文件不存在：{target}")
+    return errors
+
+
+def run_syntax_check(path_value: Path) -> str | None:
+    """执行不会运行业务逻辑的脚本语法检查。"""
+
+    suffix = path_value.suffix.lower()
+    if suffix == ".py":
+        try:
+            ast.parse(path_value.read_text(encoding="utf-8"), filename=str(path_value))
+            return None
+        except SyntaxError as error:
+            return f"{path_value}: Python 语法错误：{error}"
+
+    if suffix == ".sh":
+        command = ["bash", "-n", str(path_value)]
+    elif suffix == ".js":
+        if not shutil.which("node"):
+            return f"{path_value}: 缺少 node，无法执行 JavaScript 语法检查"
+        command = ["node", "--check", str(path_value)]
+    else:
+        return None
+
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        return f"{path_value}: 语法检查失败：{detail}"
+    return None
+
+
+def validate_skill(skill_name: str, metadata: dict) -> list[str]:
+    """校验一个自研 Skill 的结构、版本、引用、语法和公开安全性。"""
+
+    errors = []
+    directory = source_path(metadata)
+    skill_file = directory / "SKILL.md"
+    if not skill_file.is_file():
+        return [f"{skill_name}: 缺少 SKILL.md"]
+
+    header = frontmatter(skill_file)
+    if header.get("name") != skill_name:
+        errors.append(f"{skill_name}: SKILL.md name 与注册表不一致")
+    if header.get("version") != metadata.get("version"):
+        errors.append(f"{skill_name}: SKILL.md version 与注册表不一致")
+    if not re.fullmatch(r"\d+\.\d+\.\d+", str(metadata.get("version", ""))):
+        errors.append(f"{skill_name}: 版本号必须使用 MAJOR.MINOR.PATCH")
+
+    patterns = load_safety_patterns()
+    for path_value in files_in(directory):
+        if path_value.suffix.lower() not in TEXT_SUFFIXES:
+            continue
+        try:
+            content = path_value.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            errors.append(f"{path_value}: 文本文件不是 UTF-8")
+            continue
+
+        for line_number, line in enumerate(content.splitlines(), start=1):
+            for pattern in patterns:
+                if pattern.search(line):
+                    relative = path_value.relative_to(REPOSITORY_ROOT)
+                    errors.append(f"{relative}:{line_number}: 命中公开安全规则 {pattern.pattern}")
+
+        if path_value.suffix.lower() == ".md":
+            errors.extend(validate_markdown_links(path_value, directory))
+
+        syntax_error = run_syntax_check(path_value)
+        if syntax_error:
+            errors.append(syntax_error)
+
+        if path_value.suffix.lower() == ".json":
+            try:
+                json.loads(content)
+            except json.JSONDecodeError as error:
+                errors.append(f"{path_value}: JSON 格式错误：{error}")
+
+    return errors
+
+
+def validate_registry(registry: dict) -> list[str]:
+    """校验依赖指向、所有权和源码目录。"""
+
+    errors = []
+    known_names = set(registry["skills"])
+    for skill_name, metadata in registry["skills"].items():
+        if metadata.get("ownership") != "first-party":
+            errors.append(f"{skill_name}: ownership 不合法")
+        if metadata.get("target") not in {"codex", "agents"}:
+            errors.append(f"{skill_name}: target 不合法")
+        for dependency in metadata.get("dependencies", []):
+            if dependency not in known_names:
+                errors.append(f"{skill_name}: 依赖未登记：{dependency}")
+        if not source_path(metadata).is_dir():
+            errors.append(f"{skill_name}: 源码目录不存在")
+    return errors
+
+
+def command_validate(args: argparse.Namespace, registry: dict) -> int:
+    """执行注册表和选定 Skill 的静态校验。"""
+
+    errors = validate_registry(registry)
+    names = select_names(args, registry)
+    for skill_name in names:
+        errors.extend(validate_skill(skill_name, registry["skills"][skill_name]))
+
+    if errors:
+        print("校验失败：", file=sys.stderr)
+        for error in errors:
+            print(f"- {error}", file=sys.stderr)
+        return 1
+
+    print(f"校验通过：{', '.join(names)}")
+    return 0
+
+
+def status_label(skill_name: str, metadata: dict) -> tuple[str, Path]:
+    """返回源码、安装目录和部署记录之间的状态。"""
+
+    source_manifest = manifest(source_path(metadata))
+    target_path = install_root(metadata["target"]) / skill_name
+    installed_manifest = manifest(target_path)
+    deployed_manifest = read_state(skill_name).get("manifest", {})
+
+    if not target_path.exists():
+        return "未安装", target_path
+    if not deployed_manifest:
+        if installed_manifest == source_manifest:
+            return "内容一致但尚未登记部署", target_path
+        return "现有安装未受管", target_path
+    if installed_manifest != deployed_manifest:
+        return "安装目录存在人工漂移", target_path
+    if source_manifest != deployed_manifest:
+        return "源码有待部署修改", target_path
+    return "已同步", target_path
+
+
+def command_status(args: argparse.Namespace, registry: dict) -> int:
+    """展示一个或全部 Skill 状态。"""
+
+    names = select_names(args, registry)
+    return_code = 0
+    for skill_name in names:
+        metadata = registry["skills"][skill_name]
+        label, target_path = status_label(skill_name, metadata)
+        print(f"{skill_name}: {label} ({target_path})")
+        if label == "安装目录存在人工漂移":
+            return_code = 2
+    return return_code
+
+
+def repository_commit() -> str:
+    """读取当前仓库提交；尚未提交时返回 working-tree。"""
+
+    result = subprocess.run(
+        ["git", "-C", str(REPOSITORY_ROOT), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip() if result.returncode == 0 else "working-tree"
+
+
+def timestamp() -> str:
+    """生成适合作为目录名的本地时间戳。"""
+
+    return datetime_module.datetime.now().astimezone().strftime("%Y%m%d-%H%M%S-%f")
+
+
+def deploy_skill(skill_name: str, metadata: dict, force_initial: bool) -> None:
+    """校验后原子部署单个 Skill，并保存可回滚备份。"""
+
+    errors = validate_skill(skill_name, metadata)
+    if errors:
+        raise RuntimeError("部署前校验失败：\n" + "\n".join(f"- {error}" for error in errors))
+
+    source_directory = source_path(metadata)
+    target_directory = install_root(metadata["target"]) / skill_name
+    current_manifest = manifest(target_directory)
+    previous_state = read_state(skill_name)
+    deployed_manifest = previous_state.get("manifest", {})
+
+    if target_directory.exists() and not deployed_manifest and not force_initial:
+        raise RuntimeError(
+            f"{skill_name} 已存在但没有部署记录；请先审阅差异，再显式使用 --force-initial 完成首次接管"
+        )
+    if deployed_manifest and current_manifest != deployed_manifest:
+        raise RuntimeError(
+            f"{skill_name} 安装目录存在部署后的人工修改；请先使用 import-local 保存差异，禁止覆盖"
+        )
+
+    target_directory.parent.mkdir(parents=True, exist_ok=True)
+    staging_directory = Path(tempfile.mkdtemp(prefix=f".{skill_name}.", dir=target_directory.parent))
+    backup_directory = state_root() / "backups" / skill_name / timestamp()
+
+    try:
+        shutil.copytree(source_directory, staging_directory, dirs_exist_ok=True, symlinks=True)
+        if target_directory.exists():
+            backup_directory.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(target_directory, backup_directory)
+        os.replace(staging_directory, target_directory)
+    except Exception:
+        if staging_directory.exists():
+            shutil.rmtree(staging_directory)
+        if backup_directory.exists() and not target_directory.exists():
+            os.replace(backup_directory, target_directory)
+        raise
+
+    deployed = manifest(target_directory)
+    expected = manifest(source_directory)
+    if deployed != expected:
+        raise RuntimeError(f"{skill_name} 部署后哈希校验失败；原安装备份位于 {backup_directory}")
+
+    write_json_atomic(state_path(skill_name), {
+        "skill": skill_name,
+        "version": metadata["version"],
+        "repositoryCommit": repository_commit(),
+        "deployedAt": datetime_module.datetime.now().astimezone().isoformat(),
+        "source": str(source_directory),
+        "target": str(target_directory),
+        "backup": str(backup_directory) if backup_directory.exists() else "",
+        "manifest": deployed,
+    })
+    print(f"已部署 {skill_name} {metadata['version']} -> {target_directory}")
+
+
+def dependency_order(names: list[str], registry: dict) -> list[str]:
+    """按依赖先于调用方的顺序排列 Skill。"""
+
+    requested = set(names)
+    ordered = []
+    visiting = set()
+    visited = set()
+
+    def visit(skill_name: str) -> None:
+        if skill_name in visited:
+            return
+        if skill_name in visiting:
+            raise RuntimeError(f"检测到循环依赖：{skill_name}")
+        visiting.add(skill_name)
+        for dependency in registry["skills"][skill_name].get("dependencies", []):
+            if dependency in requested:
+                visit(dependency)
+        visiting.remove(skill_name)
+        visited.add(skill_name)
+        ordered.append(skill_name)
+
+    for name in names:
+        visit(name)
+    return ordered
+
+
+def command_deploy(args: argparse.Namespace, registry: dict) -> int:
+    """按依赖顺序部署一个或全部自研 Skill。"""
+
+    names = dependency_order(select_names(args, registry), registry)
+    for skill_name in names:
+        deploy_skill(skill_name, registry["skills"][skill_name], args.force_initial)
+    return 0
+
+
+def command_import_local(args: argparse.Namespace, registry: dict) -> int:
+    """将安装目录复制到用户指定的新目录，供人工审阅和导回。"""
+
+    metadata = registry["skills"].get(args.skill)
+    if not metadata:
+        raise RuntimeError("import-local 只支持已登记的自研 Skill")
+    target_directory = install_root(metadata["target"]) / args.skill
+    destination = Path(args.destination).expanduser().resolve()
+    if not target_directory.is_dir():
+        raise RuntimeError(f"安装目录不存在：{target_directory}")
+    if destination.exists():
+        raise RuntimeError(f"目标已存在，拒绝覆盖：{destination}")
+    shutil.copytree(target_directory, destination, symlinks=True)
+    print(f"已导出 {args.skill} 当前安装内容到 {destination}；请人工比较后再修改源码")
+    return 0
+
+
+def command_rollback(args: argparse.Namespace, registry: dict) -> int:
+    """将安装目录恢复为最近一次可用备份，并保留被替换版本。"""
+
+    metadata = registry["skills"].get(args.skill)
+    if not metadata:
+        raise RuntimeError("rollback 只支持已登记的自研 Skill")
+    backup_root = state_root() / "backups" / args.skill
+    backups = sorted((path_value for path_value in backup_root.iterdir() if path_value.is_dir()), reverse=True) \
+        if backup_root.is_dir() else []
+    if not backups:
+        raise RuntimeError(f"{args.skill} 没有可用备份")
+
+    selected_backup = backups[0]
+    target_directory = install_root(metadata["target"]) / args.skill
+    replaced_directory = state_root() / "replaced" / args.skill / timestamp()
+    if target_directory.exists():
+        replaced_directory.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(target_directory, replaced_directory)
+    os.replace(selected_backup, target_directory)
+
+    write_json_atomic(state_path(args.skill), {
+        "skill": args.skill,
+        "version": "rollback",
+        "repositoryCommit": "rollback",
+        "deployedAt": datetime_module.datetime.now().astimezone().isoformat(),
+        "source": "",
+        "target": str(target_directory),
+        "backup": str(replaced_directory) if replaced_directory.exists() else "",
+        "manifest": manifest(target_directory),
+    })
+    print(f"已回滚 {args.skill}；被替换版本保存在 {replaced_directory}")
+    return 0
+
+
+def command_doctor(_args: argparse.Namespace, _registry: dict) -> int:
+    """检查仓库管理和各 Skill 常用的本机依赖。"""
+
+    commands = ["git", "gh", "bash", "python3", "node", "jq", "ssh", "mysql", "aliyunlog", "zentao", "security"]
+    missing = []
+    for command in commands:
+        executable = shutil.which(command)
+
+        # mysql-search 同时支持 Homebrew 未加入 PATH 的 mysql-client@8.0。
+        if command == "mysql" and not executable and shutil.which("brew"):
+            brew_result = subprocess.run(
+                ["brew", "--prefix", "mysql-client@8.0"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            candidate = Path(brew_result.stdout.strip()) / "bin" / "mysql"
+            if brew_result.returncode == 0 and candidate.is_file():
+                executable = str(candidate)
+
+        print(f"{command}: {executable or '缺失'}")
+        if not executable:
+            missing.append(command)
+
+    runtime_config = Path(
+        os.environ.get(
+            "FANGZHIKUN_SKILLS_CONFIG",
+            str(Path.home() / ".config" / "fangzhikun-skills" / "runtime.json"),
+        )
+    ).expanduser()
+    print(f"runtime-config: {'存在' if runtime_config.is_file() else '缺失'} ({runtime_config})")
+    return 1 if missing else 0
+
+
+def command_path(args: argparse.Namespace, registry: dict) -> int:
+    """输出指定 Skill 的源码或安装路径。"""
+
+    metadata = registry["skills"].get(args.skill)
+    if not metadata:
+        raise RuntimeError(f"未登记的 Skill：{args.skill}")
+    if args.source:
+        print(source_path(metadata))
+    else:
+        print(install_root(metadata["target"]) / args.skill)
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """构造命令行解析器。"""
+
+    parser = argparse.ArgumentParser(description="管理 fangzhikun-skills 的源码和本机部署")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    for command_name in ["status", "validate", "deploy"]:
+        command_parser = subparsers.add_parser(command_name)
+        command_parser.add_argument("skill", nargs="?")
+        command_parser.add_argument("--all", action="store_true")
+        if command_name == "deploy":
+            command_parser.add_argument(
+                "--force-initial",
+                action="store_true",
+                help="首次接管已有安装目录时，在完成备份后允许替换",
+            )
+
+    import_parser = subparsers.add_parser("import-local")
+    import_parser.add_argument("skill")
+    import_parser.add_argument("--destination", required=True)
+
+    rollback_parser = subparsers.add_parser("rollback")
+    rollback_parser.add_argument("skill")
+
+    subparsers.add_parser("doctor")
+
+    path_parser = subparsers.add_parser("path")
+    path_parser.add_argument("skill")
+    path_parser.add_argument("--source", action="store_true")
+    return parser
+
+
+def main() -> int:
+    """解析参数并执行对应管理动作。"""
+
+    parser = build_parser()
+    args = parser.parse_args()
+    registry = load_registry()
+    handlers = {
+        "status": command_status,
+        "validate": command_validate,
+        "deploy": command_deploy,
+        "import-local": command_import_local,
+        "rollback": command_rollback,
+        "doctor": command_doctor,
+        "path": command_path,
+    }
+
+    try:
+        return handlers[args.command](args, registry)
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
+        print(f"错误：{error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

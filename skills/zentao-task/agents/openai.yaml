@@ -1,0 +1,6 @@
+interface:
+  display_name: "禅道任务交付"
+  short_description: "按任务 ID 编排分析、开发、文档、完成与受控指派流程"
+  default_prompt: "使用 $zentao-task 完成指定 ID 的禅道任务；后续确认按提示使用最短回复。"
+policy:
+  allow_implicit_invocation: false

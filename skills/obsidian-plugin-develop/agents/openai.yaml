@@ -1,0 +1,7 @@
+interface:
+  display_name: "Obsidian 插件开发与发布"
+  short_description: "维护 Obsidian 插件并完成 GitHub 与社区市场发布"
+  default_prompt: "使用 $obsidian-plugin-develop 维护当前 Obsidian 插件，完成构建、中文 Git 提交、GitHub Release 和社区市场提交。"
+
+policy:
+  allow_implicit_invocation: false

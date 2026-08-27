@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "skills": {
+    "log-search": {
+      "version": "1.0.0",
+      "ownership": "first-party",
+      "source": "skills/log-search",
+      "target": "codex",
+      "dependencies": ["server-connect"]
+    },
+    "mysql-search": {
+      "version": "1.0.0",
+      "ownership": "first-party",
+      "source": "skills/mysql-search",
+      "target": "codex",
+      "dependencies": []
+    },
+    "obsidian-plugin-develop": {
+      "version": "1.0.0",
+      "ownership": "first-party",
+      "source": "skills/obsidian-plugin-develop",
+      "target": "codex",
+      "dependencies": []
+    },
+    "server-connect": {
+      "version": "1.0.0",
+      "ownership": "first-party",
+      "source": "skills/server-connect",
+      "target": "codex",
+      "dependencies": []
+    },
+    "zentao-debug": {
+      "version": "1.0.0",
+      "ownership": "first-party",
+      "source": "skills/zentao-debug",
+      "target": "codex",
+      "dependencies": ["log-search", "mysql-search"]
+    },
+    "zentao-project-manager": {
+      "version": "1.0.0",
+      "ownership": "first-party",
+      "source": "skills/zentao-project-manager",
+      "target": "codex",
+      "dependencies": []
+    },
+    "zentao-task": {
+      "version": "1.0.0",
+      "ownership": "first-party",
+      "source": "skills/zentao-task",
+      "target": "codex",
+      "dependencies": ["zentao-project-manager"]
+    }
+  }
+}
