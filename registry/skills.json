@@ -22,6 +22,13 @@
       "target": "codex",
       "dependencies": []
     },
+    "req-governance": {
+      "version": "1.0.0",
+      "ownership": "first-party",
+      "source": "skills/req-governance",
+      "target": "codex",
+      "dependencies": []
+    },
     "server-connect": {
       "version": "1.0.0",
       "ownership": "first-party",

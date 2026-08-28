@@ -1,0 +1,7 @@
+interface:
+  display_name: "接口 Req/Resp 字段治理"
+  short_description: "按真实接口契约治理并自查 Req/Resp 与 OpenAPI Schema"
+  default_prompt: "使用 $req-governance 治理并自查指定接口的 Req/Resp 字段契约。"
+
+policy:
+  allow_implicit_invocation: false
