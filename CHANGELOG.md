@@ -9,9 +9,14 @@
 - `log-search` 升级到 1.1.0：生产环境需要结合代码分析时，统一使用 `origin/pre` 作为代码基线，不切换或修改用户当前工作区。
 - `mysql-search` 升级到 1.1.0：生产环境需要结合代码确认表字段、枚举或 SQL 映射时，统一使用 `origin/pre` 作为代码基线。
 - 本次规则对现有查询流程向后兼容，无需迁移；`origin/pre` 不可用时必须明确报告限制，不得用其他分支替代。
+- `log-search` 和 `mysql-search` 恢复为 1.0.0，移除统一生产环境代码分析基线规则，仅保留各自的日志与数据库查询职责。
+- 两个辅助 Skill 的上游调用条件改为按注册表依赖判断，继续兼容 `zentao-debug`，并允许新增的问题分析 Skill 按需复用。
 
 ### 新增
 
+- 新增 `vesselhub-problem-analyze` 1.0.0，用于经营系统问题分析，并按需联动 `log-search` 和 `mysql-search` 补充只读证据。
+- 生产环境分析 VesselHub 或其他下游服务代码时，统一使用对应服务自身仓库的 `origin/pre`，不切换或修改用户当前工作区。
+- 默认禁止隐式调用；现有 Skill 无需迁移，后续通过 `$vesselhub-problem-analyze` 显式启用。
 - 新增 `req-governance` 1.0.0，将接口 Req/Resp 字段治理与快速自查能力纳入统一版本管理。
 - 保留完整治理手册作为按需参考，将高频约束压缩到 Skill 入口，降低常规调用的上下文消耗。
 - 默认禁止隐式调用，不依赖其他 Skill；现有使用方式无需迁移，后续通过 `$req-governance` 显式启用。

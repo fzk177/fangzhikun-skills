@@ -1,0 +1,7 @@
+interface:
+  display_name: "经营系统问题分析"
+  short_description: "结合代码、日志和数据库证据排查经营系统问题"
+  default_prompt: "使用 $vesselhub-problem-analyze 分析指定环境的经营系统问题；需要时调用只读日志和数据库查询补充证据。"
+
+policy:
+  allow_implicit_invocation: false
