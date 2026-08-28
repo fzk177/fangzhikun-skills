@@ -2,14 +2,14 @@
   "schemaVersion": 1,
   "skills": {
     "log-search": {
-      "version": "1.0.0",
+      "version": "1.1.0",
       "ownership": "first-party",
       "source": "skills/log-search",
       "target": "codex",
       "dependencies": ["server-connect"]
     },
     "mysql-search": {
-      "version": "1.0.0",
+      "version": "1.1.0",
       "ownership": "first-party",
       "source": "skills/mysql-search",
       "target": "codex",

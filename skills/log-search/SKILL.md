@@ -1,7 +1,7 @@
 ---
 name: log-search
 description: 显式调用 $log-search 时，在 dev、pre 或生产环境执行只读日志查询，串联调用上下文并分析问题根因；不修改服务、日志或 SLS 配置。
-version: 1.0.0
+version: 1.1.0
 ---
 
 # 日志查询分析
@@ -30,6 +30,8 @@ version: 1.0.0
 确定环境后，完整读取 [references/environments.md](references/environments.md)，只执行对应环境的流程。pre/生产首次使用 SLS、认证失败或工具缺失时，再完整读取 [references/setup.md](references/setup.md)。dev 的 SSH 别名缺失或认证失败时，只报告阻塞点并建议显式调用 `$server-connect` 配置连接，不在本 skill 中修改 SSH 配置。
 
 ## 查询策略
+
+若指定环境为 `prod/生产`，并且需要结合项目代码分析调用链、参数映射或异常来源，必须以远端跟踪引用 `origin/pre` 作为代码基线。优先使用针对该引用的只读 Git 命令进行检索，不切换或修改用户当前工作区；`origin/pre` 不存在或无法确认时，明确说明代码分析受限，不使用当前分支或其他分支替代。
 
 1. 先用最稳定、选择性最高的标识精确查询，如 traceId、requestId、业务单号或完整错误文本。
 2. 精确标识查询返回空时，禁止直接判定“没有日志”。UUID、带连字符/下划线/斜杠的标识以及嵌在正文中的 `taskId=...` 可能受 SLS 分词、查询语法或字段未单独提取影响，必须完成“索引查询兜底”：

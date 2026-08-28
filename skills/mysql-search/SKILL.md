@@ -1,7 +1,7 @@
 ---
 name: mysql-search
 description: 显式调用 $mysql-search，或由 $zentao-debug 按需进入数据库证据补全流程时，根据 dev、pre、prod 环境对 MySQL 8.0 执行严格只读查询并分析结果；不执行写入、DDL、锁定、存储过程或权限变更。
-version: 1.0.0
+version: 1.1.0
 ---
 
 # MySQL 只读查询
@@ -26,6 +26,8 @@ version: 1.0.0
 - 已知表名、字段名、枚举值、业务编号或时间范围。
 
 自然语言里的“客商属性为外贸”“国家地区为中国”等业务概念不能直接猜字段和值。先使用以下证据确定映射：
+
+当指定环境为 `prod/生产`，并且需要结合项目代码确认调用链、表字段、枚举或 SQL 映射时，必须以远端跟踪引用 `origin/pre` 作为代码基线。优先使用针对该引用的只读 Git 命令进行检索，不切换或修改用户当前工作区；`origin/pre` 不存在或无法确认时，明确说明代码分析受限，不使用当前分支或其他分支替代。
 
 1. 在当前项目中定向查找相关 Controller、Req、枚举、Mapper 和 SQL。
 2. 必要时用 `SHOW TABLES`、`DESC` 或 `information_schema` 的只读查询确认真实表结构。
