@@ -2,6 +2,19 @@
 
 本项目遵循语义化版本管理。每个 Skill 的独立版本记录在 `registry/skills.json`。
 
+## 2026-08-31
+
+### 变更
+
+- `mysql-search` 升级到 2.0.0：`prod` 从 MySQL 账号直连改为通过阿里云 DMS `ExecuteScript` 执行严格只读查询，`dev/pre` 保持原 MySQL 8.0 只读直连流程。
+- 生产配置改为登记 DMS 地域、租户 ID、阿里云 CLI profile，以及数据库名到 DMS DbId 和逻辑库标记的精确映射；旧版生产 Host、端口、用户名和钥匙串配置不再使用，需要按新流程重新配置。
+- `vesselhub-problem-analyze` 和 `zentao-debug` 继续按现有依赖调用 `mysql-search`，生产数据库证据补全将自动使用新的 DMS 查询通道。
+
+### 安全改造
+
+- 生产环境不再尝试数据库账号直连或跨环境回退；DMS 调用前继续执行只读 SQL 白名单，并强制控制生产 `SELECT` 的结尾 `LIMIT`。
+- DMS 返回后再次校验单结果集和最大行数；本机配置只保存非秘密路由信息，阿里云身份由 CLI 官方认证机制管理。
+
 ## 2026-08-28
 
 ### 变更

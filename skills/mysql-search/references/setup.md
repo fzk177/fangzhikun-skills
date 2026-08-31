@@ -1,61 +1,90 @@
-# MySQL 查询首次配置
+# 数据库查询首次配置
 
-## 客户端
+## dev 和 pre
 
-使用 MySQL 8.0 客户端。本机 Homebrew 安装命令为：
+`dev/pre` 使用 MySQL 8.0 客户端和专用只读账号。本机 Homebrew 安装命令为：
 
 ```bash
 brew install mysql-client@8.0
 ```
 
-该 formula 是 keg-only，不需要修改 `~/.zshrc`；查询脚本会自动查找 `brew --prefix mysql-client@8.0` 下的客户端。skill 不自动启动或安装 MySQL Server。
+该 formula 是 keg-only，不需要修改 `~/.zshrc`；查询脚本会自动查找 `brew --prefix mysql-client@8.0` 下的客户端。Skill 不自动启动或安装 MySQL Server，也不自动安装客户端。客户端缺失时，只有在用户明确授权后才能执行安装命令。
 
-如果客户端缺失，只有在用户明确授权安装时才执行上述命令；否则报告缺失项并让用户自行安装。
-
-## 一次性配置环境
-
-每个需要使用的环境分别执行一次。未通过参数提供的 Host、端口和用户名都会逐项提示输入，随后由 macOS 钥匙串单独提示输入密码。数据库不属于连接配置，在每次查询时指定：
+每个需要使用的环境分别执行一次。未通过参数提供的 Host、端口和用户名都会逐项提示输入，随后由 macOS 钥匙串单独提示输入密码：
 
 ```bash
 bash "${CODEX_HOME:-$HOME/.codex}/skills/mysql-search/scripts/configure.sh" --env dev
 bash "${CODEX_HOME:-$HOME/.codex}/skills/mysql-search/scripts/configure.sh" --env pre
-bash "${CODEX_HOME:-$HOME/.codex}/skills/mysql-search/scripts/configure.sh" --env prod
 ```
 
-脚本会：
+脚本会把 Host、端口和用户名保存到权限为 `600` 的本机 JSON 配置中，把密码保存到默认 macOS 钥匙串。密码不会进入 shell 参数、历史或配置文件。
 
-1. 提示输入该环境的 Host、端口和用户名，不使用内置数据库地址。
-2. 调用 macOS `security`，在最后一个 `-w` 参数后安全提示输入密码；密码不会进入 shell 参数、历史或配置文件。
-3. 把 Host、端口和用户名保存到 `${XDG_CONFIG_HOME:-$HOME/.config}/fangzhikun-skills/mysql-search/<env>.json`，权限为 `600`。
-4. 把密码保存到默认 macOS 钥匙串，service 为 `codex.mysql-search.<env>`，account 为数据库用户名。
+优先使用数据库侧专用只读账号，并将权限限制为目标 schema 的 `SELECT` 和必要的 `SHOW VIEW`。Skill 不创建账号、不执行 `GRANT`、不修改权限。
 
-环境地址、数据库或用户名需要覆盖时使用：
+## prod
+
+`prod` 不再使用 MySQL 账号直连，只通过阿里云 DMS OpenAPI 的 `ExecuteScript` 查询。
+
+### 阿里云 CLI 与身份
+
+本机需要阿里云 CLI，并能执行：
+
+```bash
+aliyun version
+```
+
+CLI 缺失时，Skill 只报告缺失项，不自动安装。需要安装时应由用户明确授权，并遵循阿里云 CLI 官方安装文档。
+
+身份配置必须由用户在自己的终端中完成。优先使用 CloudSSO、STS、RAM 角色或外部凭据等短期认证方式；确实只能使用 AccessKey 时，也只能通过阿里云 CLI 官方配置流程保存。不要把 AccessKey Secret、STS Token 或浏览器 Cookie 粘贴到聊天窗口，也不要写入 `prod.json`。
+
+Skill 只读取 CLI profile 名并传给 `aliyun` 命令，不读取、复制或输出阿里云 CLI 的凭据文件。可为本 Skill 单独建立 profile，例如 `mysql-search-prod`，避免误用其他身份。
+
+### 最小权限
+
+执行身份至少需要调用 DMS `ExecuteScript` 的 RAM 权限，并且该身份必须已加入正确的 DMS 租户、拥有目标生产数据库的查询权限。DMS 数据库权限应只授予查询和必要的元数据查看能力，不授予变更数据、结构设计、数据导出或权限管理能力。
+
+阿里云 DMS 的 `ExecuteScript` 接口本身可能支持 DDL 和 DML。包装脚本会在调用前只放行 `SELECT`、`SHOW`、`DESC/DESCRIBE`、`EXPLAIN`，但客户端校验不能替代 DMS 侧的最小权限和安全规则。
+
+### 登记数据库路由
+
+每个生产数据库都要明确登记数据库名、DMS DbId 和是否为逻辑库。地域、租户 ID 和 CLI profile 在同一 `prod.json` 中复用；重复执行可追加或更新单个数据库映射：
 
 ```bash
 bash "${CODEX_HOME:-$HOME/.codex}/skills/mysql-search/scripts/configure.sh" \
-  --env pre \
-  --host '已确认的地址' \
-  --port 3306 \
-  --username '只读账号'
+  --env prod \
+  --database example_database \
+  --db-id '<DMS数据库ID>' \
+  --logic false \
+  --region '<实际地域>' \
+  --tenant-id '<DMS租户ID>' \
+  --aliyun-profile mysql-search-prod
 ```
 
-重新执行会更新相同环境和用户名的钥匙串密码，不需要在对话中提供凭据。
+- `DbId` 是 DMS 数据库 ID，不是 RDS 实例 ID、数据库端口或 schema 名。
+- 普通物理库使用 `--logic false`，DMS 逻辑库使用 `--logic true`。
+- 数据库名只用于本机精确映射；查询时不会通过近似名称自动搜索其他生产库。
+- 旧版 `prod.json` 中的 Host、端口、用户名和钥匙串配置不再使用。迁移时重新执行上述配置命令；Skill 不自动改写本机真实配置。
 
-## 账号权限
-
-优先使用专用只读账号，并由数据库管理员将权限限制为目标 schema 的 `SELECT` 和必要的 `SHOW VIEW`。不要使用拥有 `INSERT`、`UPDATE`、`DELETE`、DDL、权限管理或文件权限的账号。
-
-skill 不创建账号、不执行 `GRANT`、不修改权限。只有客户端校验和只读事务不能替代数据库侧最小权限。
+DMS 租户 ID 可从 DMS 控制台的租户信息中确认，DbId 可从目标数据库详情或 DMS `SearchDatabase` 结果中确认。无法唯一确认 DbId、逻辑库标记或租户时必须停止配置，不得猜测。
 
 ## 验证
 
-配置完成后执行最小只读查询：
+`dev/pre` 可使用最小查询验证 MySQL 连接：
 
 ```bash
 bash "${CODEX_HOME:-$HOME/.codex}/skills/mysql-search/scripts/query.sh" \
   --env dev \
   --database example_database \
-  --sql 'SELECT VERSION() AS mysql_version, DATABASE() AS database_name'
+  --sql 'SELECT VERSION() AS mysql_version, DATABASE() AS database_name LIMIT 1'
 ```
 
-认证失败时重新运行 `configure.sh` 更新钥匙串；网络失败时检查 VPN、白名单和 Host。不要把密码粘贴到聊天窗口。
+`prod` 配置完成后使用无业务数据的最小查询验证 DMS 路由和权限：
+
+```bash
+bash "${CODEX_HOME:-$HOME/.codex}/skills/mysql-search/scripts/query.sh" \
+  --env prod \
+  --database example_database \
+  --sql 'SELECT 1 AS connectivity_check LIMIT 1'
+```
+
+认证失败时由用户更新对应 CLI profile；无 DMS 查询权限时联系管理员授予最小权限；数据库未命中时核对 `prod.json` 中的精确数据库映射。不要改用旧生产数据库账号，也不要跨环境重试。

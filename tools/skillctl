@@ -510,7 +510,7 @@ def command_rollback(args: argparse.Namespace, registry: dict) -> int:
 def command_doctor(_args: argparse.Namespace, _registry: dict) -> int:
     """检查仓库管理和各 Skill 常用的本机依赖。"""
 
-    commands = ["git", "gh", "bash", "python3", "node", "jq", "ssh", "mysql", "aliyunlog", "zentao", "security"]
+    commands = ["git", "gh", "bash", "python3", "node", "jq", "ssh", "mysql", "aliyun", "aliyunlog", "zentao", "security"]
     missing = []
     for command in commands:
         executable = shutil.which(command)

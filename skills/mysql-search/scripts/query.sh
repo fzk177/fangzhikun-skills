@@ -76,7 +76,13 @@ if [[ ! "$DATABASE_NAME" =~ ^[A-Za-z0-9_]+$ ]]; then
   exit 2
 fi
 
-if [[ ! "$ROW_LIMIT" =~ ^[0-9]+$ ]] || (( ROW_LIMIT < 1 || ROW_LIMIT > MAX_ROW_LIMIT )); then
+if [[ ! "$ROW_LIMIT" =~ ^[0-9]+$ ]] || [[ "${#ROW_LIMIT}" -gt 3 ]]; then
+  printf '%s\n' "--limit 在 ${ENVIRONMENT} 环境必须位于 1 到 ${MAX_ROW_LIMIT} 之间" >&2
+  exit 2
+fi
+
+ROW_LIMIT="$((10#$ROW_LIMIT))"
+if (( ROW_LIMIT < 1 || ROW_LIMIT > MAX_ROW_LIMIT )); then
   printf '%s\n' "--limit 在 ${ENVIRONMENT} 环境必须位于 1 到 ${MAX_ROW_LIMIT} 之间" >&2
   exit 2
 fi
@@ -116,14 +122,167 @@ esac
 UPPER_SQL="$(printf '%s' "$SQL_TEXT" | tr '[:lower:]' '[:upper:]')"
 if [[ "$UPPER_SQL" =~ INTO[[:space:]]+(OUTFILE|DUMPFILE) ]] \
   || [[ "$UPPER_SQL" =~ FOR[[:space:]]+UPDATE ]] \
+  || [[ "$UPPER_SQL" =~ FOR[[:space:]]+SHARE ]] \
   || [[ "$UPPER_SQL" =~ LOCK[[:space:]]+IN[[:space:]]+SHARE[[:space:]]+MODE ]] \
+  || [[ "$UPPER_SQL" =~ ^EXPLAIN[[:space:]]+ANALYZE ]] \
   || [[ "$UPPER_SQL" =~ (GET_LOCK|RELEASE_LOCK|SLEEP|BENCHMARK|LOAD_FILE)[[:space:]]*\( ]]; then
   printf '%s\n' "SQL 包含被禁止的文件、锁定或资源消耗操作" >&2
   exit 3
 fi
 
-if ! command -v jq >/dev/null 2>&1 || ! command -v security >/dev/null 2>&1; then
-  printf '%s\n' "查询需要 jq 和 macOS security 命令" >&2
+# DMS 不提供客户端侧的 select-limit。生产 SELECT 没有结尾 LIMIT 时自动补齐，已有 LIMIT 则校验返回上限。
+if [[ "$ENVIRONMENT" == "prod" && "$FIRST_KEYWORD" == "SELECT" ]]; then
+  SELECT_ROW_LIMIT=""
+
+  if [[ "$UPPER_SQL" =~ LIMIT[[:space:]]+([0-9]+)[[:space:]]*,[[:space:]]*([0-9]+)$ ]]; then
+    SELECT_ROW_LIMIT="${BASH_REMATCH[2]}"
+  elif [[ "$UPPER_SQL" =~ LIMIT[[:space:]]+([0-9]+)([[:space:]]+OFFSET[[:space:]]+[0-9]+)?$ ]]; then
+    SELECT_ROW_LIMIT="${BASH_REMATCH[1]}"
+  else
+    SQL_TEXT="${SQL_TEXT} LIMIT ${ROW_LIMIT}"
+  fi
+
+  if [[ -n "$SELECT_ROW_LIMIT" ]] \
+    && { [[ "${#SELECT_ROW_LIMIT}" -gt 3 ]] || (( 10#$SELECT_ROW_LIMIT > ROW_LIMIT )); }; then
+    printf '%s\n' "生产环境 SELECT 的结尾 LIMIT 不能超过 ${ROW_LIMIT}" >&2
+    exit 3
+  fi
+fi
+
+if ! command -v jq >/dev/null 2>&1; then
+  printf '%s\n' "查询需要 jq 命令" >&2
+  exit 4
+fi
+
+CONFIG_BASE="${XDG_CONFIG_HOME:-$HOME/.config}"
+CONFIG_FILE="${CONFIG_BASE}/fangzhikun-skills/mysql-search/${ENVIRONMENT}.json"
+if [[ ! -f "$CONFIG_FILE" ]]; then
+  printf '%s\n' "缺少 ${ENVIRONMENT} 环境配置，请先运行 scripts/configure.sh --env ${ENVIRONMENT}" >&2
+  exit 4
+fi
+
+# 生产环境只通过阿里云 DMS 查询，不再读取或尝试旧的 MySQL 直连账号。
+if [[ "$ENVIRONMENT" == "prod" ]]; then
+  if ! command -v aliyun >/dev/null 2>&1; then
+    printf '%s\n' "未找到阿里云 CLI，请阅读 references/setup.md" >&2
+    exit 4
+  fi
+
+  if [[ "$(jq -r '.transport // empty' "$CONFIG_FILE")" != "dms" ]]; then
+    printf '%s\n' "prod 配置不是 DMS 格式，请重新运行 scripts/configure.sh --env prod" >&2
+    exit 4
+  fi
+
+  if ! jq -e --arg database_name "$DATABASE_NAME" '
+    (.region | type == "string" and length > 0)
+    and (.tenantId | tostring | test("^[0-9]+$"))
+    and (.aliyunProfile | type == "string" and length > 0)
+    and (.databases[$database_name].dbId | tostring | test("^[0-9]+$"))
+    and (.databases[$database_name].logic | type == "boolean")
+  ' "$CONFIG_FILE" >/dev/null 2>&1; then
+    printf '%s\n' "prod 未配置数据库 ${DATABASE_NAME} 的有效 DMS 路由，请先运行 scripts/configure.sh --env prod" >&2
+    exit 4
+  fi
+
+  DMS_REGION="$(jq -r '.region' "$CONFIG_FILE")"
+  DMS_TENANT_ID="$(jq -r '.tenantId | tostring' "$CONFIG_FILE")"
+  ALIYUN_PROFILE="$(jq -r '.aliyunProfile' "$CONFIG_FILE")"
+  DMS_DATABASE_ID="$(jq -r --arg database_name "$DATABASE_NAME" '.databases[$database_name].dbId | tostring' "$CONFIG_FILE")"
+  DMS_LOGIC="$(jq -r --arg database_name "$DATABASE_NAME" '.databases[$database_name].logic | tostring' "$CONFIG_FILE")"
+
+  if [[ ! "$DMS_REGION" =~ ^[A-Za-z0-9-]+$ ]] \
+    || [[ ! "$ALIYUN_PROFILE" =~ ^[A-Za-z0-9_.@-]+$ ]] \
+    || [[ "$DMS_LOGIC" != "true" && "$DMS_LOGIC" != "false" ]]; then
+    printf '%s\n' "prod DMS 配置格式不合法，请重新运行 scripts/configure.sh --env prod" >&2
+    exit 4
+  fi
+
+  TEMP_DIRECTORY="$(mktemp -d)"
+  DMS_RESPONSE_FILE="${TEMP_DIRECTORY}/response.json"
+  DMS_ERROR_FILE="${TEMP_DIRECTORY}/error.log"
+
+  cleanup_dms_files() {
+    rm -f "$DMS_RESPONSE_FILE" "$DMS_ERROR_FILE"
+    rmdir "$TEMP_DIRECTORY" 2>/dev/null || true
+  }
+  trap cleanup_dms_files EXIT
+  umask 077
+
+  if ! aliyun dms-enterprise ExecuteScript \
+    --region "$DMS_REGION" \
+    --profile "$ALIYUN_PROFILE" \
+    --DbId "$DMS_DATABASE_ID" \
+    --Logic "$DMS_LOGIC" \
+    --Script "$SQL_TEXT" \
+    --Tid "$DMS_TENANT_ID" \
+    >"$DMS_RESPONSE_FILE" 2>"$DMS_ERROR_FILE"; then
+    printf '%s\n' "DMS 查询调用失败，请检查阿里云 CLI 身份、网络及 dms:ExecuteScript 权限" >&2
+    exit 5
+  fi
+
+  if ! jq -e 'type == "object"' "$DMS_RESPONSE_FILE" >/dev/null 2>&1; then
+    printf '%s\n' "DMS 返回了无法识别的结果格式" >&2
+    exit 5
+  fi
+
+  if [[ "$(jq -r '.Success // false' "$DMS_RESPONSE_FILE")" != "true" ]]; then
+    DMS_ERROR_CODE="$(jq -r '.ErrorCode // "UNKNOWN"' "$DMS_RESPONSE_FILE")"
+    DMS_REQUEST_ID="$(jq -r '.RequestId // "UNKNOWN"' "$DMS_RESPONSE_FILE")"
+    printf 'DMS 查询失败：errorCode=%s, requestId=%s\n' "$DMS_ERROR_CODE" "$DMS_REQUEST_ID" >&2
+    exit 5
+  fi
+
+  DMS_RESULT_COUNT="$(jq '[.Results // [] | if type == "array" then .[] elif type == "object" and has("Result") then .Result[] else empty end] | length' "$DMS_RESPONSE_FILE")"
+  if [[ "$DMS_RESULT_COUNT" != "1" ]]; then
+    printf '%s\n' "DMS 返回结果数量异常，已拒绝输出" >&2
+    exit 5
+  fi
+
+  if [[ "$(jq -r '(.Results // [] | if type == "array" then .[0] elif type == "object" and has("Result") then .Result[0] else {} end).Success // false' "$DMS_RESPONSE_FILE")" != "true" ]]; then
+    printf '%s\n' "DMS 未能执行只读 SQL，请检查 SQL、DMS 数据库权限和安全规则" >&2
+    exit 5
+  fi
+
+  DMS_RETURNED_ROWS="$(jq '(.Results // [] | if type == "array" then .[0] elif type == "object" and has("Result") then .Result[0] else {} end).Rows // [] | length' "$DMS_RESPONSE_FILE")"
+  DMS_DECLARED_ROW_COUNT="$(jq -r '(.Results // [] | if type == "array" then .[0] elif type == "object" and has("Result") then .Result[0] else {} end).RowCount // 0' "$DMS_RESPONSE_FILE")"
+  if [[ ! "$DMS_DECLARED_ROW_COUNT" =~ ^[0-9]+$ ]] \
+    || [[ "${#DMS_DECLARED_ROW_COUNT}" -gt 3 ]] \
+    || (( DMS_RETURNED_ROWS > ROW_LIMIT || 10#$DMS_DECLARED_ROW_COUNT > ROW_LIMIT )); then
+    printf '%s\n' "DMS 返回行数超过 ${ROW_LIMIT}，已拒绝输出" >&2
+    exit 5
+  fi
+
+  render_dms_tsv() {
+    jq -r '
+      def result:
+        .Results // []
+        | if type == "array" then .[0]
+          elif type == "object" and has("Result") then .Result[0]
+          else {}
+          end;
+      def cell:
+        if . == null then ""
+        elif type == "array" or type == "object" then tojson
+        else tostring
+        end;
+      result as $result
+      | ($result.ColumnNames // []) as $columns
+      | ($columns | @tsv),
+        (($result.Rows // [])[] | . as $row | [$columns[] as $column | ($row[$column] | cell)] | @tsv)
+    ' "$DMS_RESPONSE_FILE"
+  }
+
+  if [[ "$OUTPUT_FORMAT" == "table" ]] && command -v column >/dev/null 2>&1; then
+    render_dms_tsv | column -t -s $'\t'
+  else
+    render_dms_tsv
+  fi
+
+  exit 0
+fi
+
+if ! command -v security >/dev/null 2>&1; then
+  printf '%s\n' "dev/pre 查询需要 macOS security 命令" >&2
   exit 4
 fi
 
@@ -137,13 +296,6 @@ fi
 
 if [[ -z "$MYSQL_BIN" || ! -x "$MYSQL_BIN" ]]; then
   printf '%s\n' "未找到 MySQL 8.0 客户端，请阅读 references/setup.md" >&2
-  exit 4
-fi
-
-CONFIG_BASE="${XDG_CONFIG_HOME:-$HOME/.config}"
-CONFIG_FILE="${CONFIG_BASE}/fangzhikun-skills/mysql-search/${ENVIRONMENT}.json"
-if [[ ! -f "$CONFIG_FILE" ]]; then
-  printf '%s\n' "缺少 ${ENVIRONMENT} 环境配置，请先运行 scripts/configure.sh --env ${ENVIRONMENT}" >&2
   exit 4
 fi
 
