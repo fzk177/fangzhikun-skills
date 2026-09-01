@@ -2,6 +2,25 @@
 
 本项目遵循语义化版本管理。每个 Skill 的独立版本记录在 `registry/skills.json`。
 
+## 2026-09-01
+
+### 新增
+
+- 新增 `java-backend-code` 1.0.0，集中维护跨 Java 后端服务通用的类注释、中文注释、显式类型、import、枚举、private 方法和 Controller Req/Resp 分层规范。
+- 新 Skill 默认禁止隐式调用，只能由用户显式调用，或由已声明依赖且已经进入代码修改阶段的 Skill 加载。
+
+### 变更
+
+- `req-governance` 升级到 1.1.0，治理模式复用 `java-backend-code`，保留字段治理专属的 Java 写法限制。
+- `vesselhub-problem-analyze` 升级到 1.1.0，允许 `zentao-debug` 复用通用问题分析流程，并在授权修复 Java 后端时加载统一编码规范。
+- `zentao-debug` 升级到 2.0.0，禅道材料获取和 Bug 专属门禁保持不变，通用代码、日志和数据库分析改由 `vesselhub-problem-analyze` 编排；移除重复的日志和数据库参考文件。
+- `zentao-task` 升级到 1.1.0，Java 后端编码阶段改为复用统一编码规范，原有禅道、Git 和交付确认流程不变。
+
+### 迁移
+
+- 普通 Java 后端开发可显式调用 `$java-backend-code`；现有 `$req-governance`、`$zentao-task`、`$vesselhub-problem-analyze` 和 `$zentao-debug` 会在已授权的 Java 修改阶段按需加载它。
+- `$zentao-debug` 不再直接依赖 `$log-search` 和 `$mysql-search`，日志与数据库证据通过 `$vesselhub-problem-analyze` 的受控子流程继续提供。
+
 ## 2026-08-31
 
 ### 变更

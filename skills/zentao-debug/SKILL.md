@@ -1,7 +1,7 @@
 ---
 name: zentao-debug
-description: 显式调用 $zentao-debug 时，只读获取并分析指定禅道 Bug，必要时联动 $log-search 和 $mysql-search 补充运行时及数据库证据；经用户明确授权后可修复代码，并在 Git 提交前请求确认。禁止写入禅道、日志和数据库。
-version: 1.0.0
+description: 显式调用 $zentao-debug 时，只读获取指定禅道 Bug，并使用 $vesselhub-problem-analyze 完成通用代码、日志和数据库证据分析；经用户明确授权后可修复代码，并在 Git 提交前请求确认。禁止写入禅道、日志和数据库。
+version: 2.0.0
 ---
 
 # ZenTao Bug 调试
@@ -36,13 +36,11 @@ bash "${CODEX_HOME:-$HOME/.codex}/skills/zentao-debug/scripts/fetch_bug.sh" <bug
 
 ## 分析
 
-1. 从标题、重现步骤、报错、历史和相关附件中提取接口路径、错误消息、业务编号、类名、表名或字段名等稳定线索。
-2. 使用 `rg`、`rg --files` 定向定位代码，避免无目的扫描。
-3. 按前端按钮与请求参数 → Controller Req/Resp 与转换 → Service/领域分支 → Repository、Mapper、Query 和数据库校验还原调用链。
-4. 当静态材料不足以确认实际异常、下游响应、运行时参数或真实分支，并且日志能有效区分现有假设时，完整读取 `references/log-search.md`，按其中条件调用 `$log-search` 补充证据。不要把日志查询变成每个 Bug 的固定步骤。
-5. 当数据库事实能区分现有假设、验证业务状态、关联缺失或重复数据时，完整读取 `references/mysql-search.md`，按其中条件调用 `$mysql-search` 补充证据。不要把数据库查询变成每个 Bug 的固定步骤。
-6. 排查阶段前端只读；数据库验证统一通过 `$mysql-search` 执行，不再读取或复用项目 local 配置中的数据库账号密码。
-7. 不运行 Maven、Vue 或其他测试命令，不自行补充测试。明确区分禅道描述、代码事实、日志事实、数据库事实、推测和待验证项。
+1. 从标题、重现步骤、报错、历史和相关附件中提取环境、故障发生时间、接口路径、错误消息、业务编号、类名、表名或字段名等稳定线索。
+2. 禅道创建时间、最后编辑时间和评论时间不能自动视为故障发生时间，除非正文或历史明确说明二者一致。
+3. 完整读取 [$vesselhub-problem-analyze](../vesselhub-problem-analyze/SKILL.md)，把已提取的禅道材料作为用户提供的排查输入，按其中规则还原调用链并按需补充只读日志或数据库证据。
+4. 排查阶段前端只读；数据库验证统一通过 `$vesselhub-problem-analyze` 声明的 `$mysql-search` 子流程执行，不读取或复用项目 local 配置中的数据库账号密码。
+5. 明确区分禅道描述、代码事实、日志事实、数据库事实、推测和待验证项，不为了匹配 Bug 描述忽略反证。
 
 ## 输出
 

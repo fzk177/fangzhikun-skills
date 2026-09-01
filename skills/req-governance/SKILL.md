@@ -1,7 +1,7 @@
 ---
 name: req-governance
 description: 治理或快速自查 Java Controller 对外接口的 Req/Resp 字段契约，包括模型复用评估、专用模型拆分、OpenAPI 3 Schema、Bean Validation 和 Controller 最小接入。仅适用于用户明确指定接口并要求 Req/Resp 治理或自查，不用于普通 DTO 重构和业务逻辑修改。
-version: 1.0.0
+version: 1.1.0
 ---
 
 # Req/Resp 字段治理
@@ -38,14 +38,10 @@ version: 1.0.0
 
 若项目缺少 OpenAPI 依赖、文档端点或 Apifox 同步配置，只报告前置问题，未经授权不扩大修改范围。
 
-## 编码约束
+## 编码依赖
 
-- 新 class 的类注释必须含 `@author fangzhikun` 和执行当天的 `@since yyyy-MM-dd`。
-- 使用必要的中文注释；复杂逻辑写明思路，大逻辑间留空行；注释不得含 HTML 标签或残留字符。
-- 不使用 `var`、Lambda、Stream、`Optional`、`switch` 表达式或模式匹配；不新增魔法值。
-- 无复用场景不抽 private 方法；确需新增时在方法头注释用途。
-- 不调整无关格式、排版、注释位置、import 顺序，不清理无关 import。
-- 未经用户明确确认，不新增或维护单元测试，不运行任何测试，也不执行 Maven 命令。
+- 仅在“治理/接入/修改/修复”模式实际修改 Java 后端代码时，完整读取 [$java-backend-code](../java-backend-code/SKILL.md) 并遵守其编码与分层规范；快速自查模式不加载该 Skill。
+- 字段治理额外禁止引入 Lambda、Stream、`Optional`、`switch` 表达式或模式匹配，避免为了接口模型调整扩大代码风格和运行环境变化。
 
 ## 输出
 

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Java 后端编码"
+  short_description: "按个人 Java 编码与分层规范实施最小范围修改"
+  default_prompt: "使用 $java-backend-code 按既定 Java 后端编码规范完成指定代码修改。"
+
+policy:
+  allow_implicit_invocation: false
