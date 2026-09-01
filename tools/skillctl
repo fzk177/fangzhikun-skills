@@ -99,6 +99,28 @@ def manifest(directory: Path) -> dict[str, str]:
     }
 
 
+def manifest_digest(manifest_value: dict[str, str]) -> str:
+    """计算稳定的目录清单摘要。"""
+
+    encoded = json.dumps(manifest_value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def normalized_skill_manifest(directory: Path) -> dict[str, str]:
+    """生成忽略 SKILL.md 版本号后的清单，用于确认漂移已经完整合入源码。"""
+
+    result = {}
+    for path_value in files_in(directory):
+        relative_path = path_value.relative_to(directory).as_posix()
+        if relative_path == "SKILL.md":
+            content = path_value.read_text(encoding="utf-8")
+            normalized = re.sub(r"(?m)^version:\s*\d+\.\d+\.\d+\s*$", "version: <normalized>", content, count=1)
+            result[relative_path] = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        else:
+            result[relative_path] = sha256_file(path_value)
+    return result
+
+
 def state_path(skill_name: str) -> Path:
     """返回单个 Skill 的部署状态文件。"""
 
@@ -473,6 +495,139 @@ def command_import_local(args: argparse.Namespace, registry: dict) -> int:
     return 0
 
 
+def build_accept_drift_plan(skill_name: str, metadata: dict, reviewed_directory: Path) -> dict:
+    """校验已审阅漂移并生成绑定源码、安装内容和导出副本的计划。"""
+
+    source_directory = source_path(metadata)
+    target_directory = install_root(metadata["target"]) / skill_name
+    previous_state = read_state(skill_name)
+    deployed_manifest = previous_state.get("manifest", {})
+
+    if not target_directory.is_dir():
+        raise RuntimeError(f"{skill_name} 安装目录不存在")
+    if not deployed_manifest:
+        raise RuntimeError(f"{skill_name} 没有既有部署记录；首次接管应使用 deploy --force-initial")
+    if not reviewed_directory.is_dir():
+        raise RuntimeError(f"已审阅导出目录不存在：{reviewed_directory}")
+
+    install_directory = install_root(metadata["target"]).resolve()
+    try:
+        reviewed_directory.relative_to(install_directory)
+        raise RuntimeError("已审阅导出目录不能位于 Skill 安装目录中")
+    except ValueError:
+        pass
+    try:
+        reviewed_directory.relative_to(REPOSITORY_ROOT.resolve())
+        raise RuntimeError("已审阅导出目录不能位于源码仓库中")
+    except ValueError:
+        pass
+
+    errors = validate_skill(skill_name, metadata)
+    if errors:
+        raise RuntimeError("漂移接管前源码校验失败：\n" + "\n".join(f"- {error}" for error in errors))
+
+    relative_source = source_directory.relative_to(REPOSITORY_ROOT)
+    git_status = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(REPOSITORY_ROOT),
+            "status",
+            "--porcelain",
+            "--",
+            str(relative_source),
+            str(REGISTRY_PATH.relative_to(REPOSITORY_ROOT)),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if git_status.returncode != 0:
+        raise RuntimeError("无法检查目标 Skill 源码和注册表的 Git 状态")
+    if git_status.stdout.strip():
+        raise RuntimeError("目标 Skill 源码或注册表仍有未提交修改，禁止接受漂移")
+
+    source_manifest = manifest(source_directory)
+    installed_manifest = manifest(target_directory)
+    reviewed_manifest = manifest(reviewed_directory)
+    if installed_manifest == deployed_manifest:
+        raise RuntimeError(f"{skill_name} 安装目录没有人工漂移，无需接管")
+    if reviewed_manifest != installed_manifest:
+        raise RuntimeError("已审阅导出目录与当前安装内容不一致，请重新导出并审阅")
+
+    # 只允许源码版本号不同，避免把未合入源码的人工修改登记为合法部署基线。
+    if normalized_skill_manifest(source_directory) != normalized_skill_manifest(target_directory):
+        raise RuntimeError("当前安装漂移尚未完整合入源码，或源码包含版本号以外的额外差异")
+
+    plan = {
+        "skill": skill_name,
+        "sourceVersion": metadata["version"],
+        "repositoryCommit": repository_commit(),
+        "sourceManifest": manifest_digest(source_manifest),
+        "installedManifest": manifest_digest(installed_manifest),
+        "reviewedManifest": manifest_digest(reviewed_manifest),
+        "previousDeploymentManifest": manifest_digest(deployed_manifest),
+        "target": str(target_directory),
+        "reviewedDirectory": str(reviewed_directory),
+    }
+    encoded_plan = json.dumps(plan, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    plan["planHash"] = hashlib.sha256(encoded_plan.encode("utf-8")).hexdigest()
+    return plan
+
+
+def command_accept_drift(args: argparse.Namespace, registry: dict) -> int:
+    """预览或接受已经导出、审阅并完整合入源码的安装漂移。"""
+
+    metadata = registry["skills"].get(args.skill)
+    if not metadata:
+        raise RuntimeError("accept-drift 只支持已登记的自研 Skill")
+    reviewed_directory = Path(args.reviewed_directory).expanduser().resolve()
+    plan = build_accept_drift_plan(args.skill, metadata, reviewed_directory)
+
+    if not args.apply:
+        print(f"Skill: {plan['skill']}")
+        print(f"源码版本: {plan['sourceVersion']}")
+        print(f"源码摘要: {plan['sourceManifest']}")
+        print(f"安装摘要: {plan['installedManifest']}")
+        print(f"导出摘要: {plan['reviewedManifest']}")
+        print(f"原部署摘要: {plan['previousDeploymentManifest']}")
+        print(f"计划哈希: {plan['planHash']}")
+        print("当前仅预览；接受漂移需要使用 --apply 和完全相同的 --plan-hash")
+        return 0
+
+    if not args.plan_hash:
+        raise RuntimeError("执行漂移接管时必须提供 --plan-hash")
+    if args.plan_hash != plan["planHash"]:
+        raise RuntimeError("漂移接管计划已变化，原确认失效；请重新预览")
+
+    previous_state = read_state(args.skill)
+    adoption_backup = state_root() / "adoptions" / args.skill / f"{timestamp()}.json"
+    write_json_atomic(adoption_backup, {
+        "previousState": previous_state,
+        "plan": plan,
+    })
+
+    target_directory = install_root(metadata["target"]) / args.skill
+    adopted_at = datetime_module.datetime.now().astimezone().isoformat()
+    updated_state = dict(previous_state)
+    updated_state.update({
+        "skill": args.skill,
+        "version": frontmatter(target_directory / "SKILL.md").get("version", previous_state.get("version", "")),
+        "adoptedAt": adopted_at,
+        "adoptedAgainstRepositoryCommit": plan["repositoryCommit"],
+        "adoptionBackup": str(adoption_backup),
+        "source": str(source_path(metadata)),
+        "target": str(target_directory),
+        "manifest": manifest(target_directory),
+    })
+    write_json_atomic(state_path(args.skill), updated_state)
+
+    label, _target_path = status_label(args.skill, metadata)
+    print(f"已接受 {args.skill} 的已审阅安装漂移；原部署状态备份于 {adoption_backup}")
+    print(f"当前状态：{label}")
+    return 0
+
+
 def command_rollback(args: argparse.Namespace, registry: dict) -> int:
     """将安装目录恢复为最近一次可用备份，并保留被替换版本。"""
 
@@ -575,6 +730,12 @@ def build_parser() -> argparse.ArgumentParser:
     import_parser.add_argument("skill")
     import_parser.add_argument("--destination", required=True)
 
+    accept_drift_parser = subparsers.add_parser("accept-drift")
+    accept_drift_parser.add_argument("skill")
+    accept_drift_parser.add_argument("--reviewed-directory", required=True)
+    accept_drift_parser.add_argument("--apply", action="store_true")
+    accept_drift_parser.add_argument("--plan-hash")
+
     rollback_parser = subparsers.add_parser("rollback")
     rollback_parser.add_argument("skill")
 
@@ -597,6 +758,7 @@ def main() -> int:
         "validate": command_validate,
         "deploy": command_deploy,
         "import-local": command_import_local,
+        "accept-drift": command_accept_drift,
         "rollback": command_rollback,
         "doctor": command_doctor,
         "path": command_path,

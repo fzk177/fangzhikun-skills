@@ -53,6 +53,31 @@ skill_import_root="$(mktemp -d)"
 
 比较源码和导出目录，只展示文件名、差异摘要和必要片段。人工修改必须由用户确认归属后，才能以最小范围合入源码；不得直接从安装目录覆盖源码。
 
+漂移已合入源码、目标 Skill 与注册表均已提交且静态校验通过后，使用同一个导出目录生成接管预览：
+
+```bash
+./tools/skillctl accept-drift <skill-name> \
+  --reviewed-directory "$skill_import_root/<skill-name>"
+```
+
+预览必须展示目标 Skill、源码版本、源码/安装/导出/原部署摘要和完整 64 位计划哈希，然后单独询问是否接受该漂移。用户确认后使用完全相同的导出目录和计划哈希执行：
+
+```bash
+./tools/skillctl accept-drift <skill-name> \
+  --reviewed-directory "$skill_import_root/<skill-name>" \
+  --apply \
+  --plan-hash <完整计划哈希>
+```
+
+该命令只更新本机部署状态，不修改源码或安装目录，并保存原部署状态备份。以下任一条件不满足时必须停止：
+
+- 导出目录与当前安装内容完全一致。
+- 源码与当前安装内容除 `SKILL.md` 版本号外完全一致。
+- 目标 Skill 源码和 `registry/skills.json` 没有未提交修改。
+- 执行时重新计算的计划哈希与用户确认值一致。
+
+接管成功后状态应为“源码有待部署修改”或“已同步”，再单独生成部署预览；接受漂移不等于授权部署。
+
 ## Git 提交
 
 提交预览包含：

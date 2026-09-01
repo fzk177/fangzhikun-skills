@@ -11,6 +11,7 @@
 
 ### 变更
 
+- `skill-manager` 升级到 1.1.0，新增带导出副本校验和计划哈希校验的安装漂移接管流程；接管只更新本机部署状态并保留原状态备份，不直接覆盖源码或安装目录。
 - `req-governance` 升级到 1.1.0，治理模式复用 `java-backend-code`，保留字段治理专属的 Java 写法限制。
 - `vesselhub-problem-analyze` 升级到 1.1.0，允许 `zentao-debug` 复用通用问题分析流程，并在授权修复 Java 后端时加载统一编码规范。
 - `zentao-debug` 升级到 2.0.0，禅道材料获取和 Bug 专属门禁保持不变，通用代码、日志和数据库分析改由 `vesselhub-problem-analyze` 编排；移除重复的日志和数据库参考文件。
