@@ -43,6 +43,13 @@
       "target": "codex",
       "dependencies": []
     },
+    "system-map": {
+      "version": "1.1.0",
+      "ownership": "first-party",
+      "source": "skills/system-map",
+      "target": "codex",
+      "dependencies": []
+    },
     "skill-manager": {
       "version": "1.1.0",
       "ownership": "first-party",

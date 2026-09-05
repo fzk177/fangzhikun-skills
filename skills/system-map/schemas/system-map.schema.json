@@ -1,0 +1,189 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/fangzhikun/fangzhikun-skills/system-map.schema.json",
+  "title": "System Map Architecture Model",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "diagramType", "meta", "nodes"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "diagramType": { "const": "architecture" },
+    "meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "language", "scope"],
+      "properties": {
+        "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "language": { "const": "zh-CN" },
+        "scope": { "enum": ["runtime", "module", "business-flow", "deployment"] },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": {
+            "type": { "enum": ["repository", "description", "mixed"] },
+            "repository": { "type": "string", "minLength": 1, "maxLength": 120 },
+            "revision": { "type": "string", "pattern": "^[a-fA-F0-9]{40}$" },
+            "dirty": { "type": "boolean" }
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 240 }
+        }
+      }
+    },
+    "layoutHints": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "direction": { "enum": ["left-to-right", "top-to-bottom"] },
+        "primaryPath": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/id" }
+        }
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 24,
+      "items": { "$ref": "#/$defs/node" }
+    },
+    "edges": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/edge" }
+    },
+    "groups": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/group" }
+    },
+    "unknowns": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/unknown" }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "maxLength": 64
+    },
+    "truth": {
+      "enum": ["verified", "derived", "declared", "unknown"]
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "line"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+"
+        },
+        "line": { "type": "integer", "minimum": 1 },
+        "endLine": { "type": "integer", "minimum": 1 },
+        "symbol": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "note": { "type": "string", "minLength": 1, "maxLength": 200 }
+      }
+    },
+    "layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rank": { "type": "integer", "minimum": 0, "maximum": 20 },
+        "lane": { "$ref": "#/$defs/id" },
+        "order": { "type": "integer", "minimum": 0, "maximum": 100 }
+      }
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "label", "truth"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "kind": {
+          "enum": [
+            "client",
+            "frontend",
+            "gateway",
+            "service",
+            "worker",
+            "database",
+            "cache",
+            "message-bus",
+            "security",
+            "external-system",
+            "infrastructure"
+          ]
+        },
+        "label": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "technology": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 180 },
+        "truth": { "$ref": "#/$defs/truth" },
+        "evidence": {
+          "type": "array",
+          "maxItems": 5,
+          "items": { "$ref": "#/$defs/evidence" }
+        },
+        "layout": { "$ref": "#/$defs/layout" }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "from", "to", "kind", "truth"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "from": { "$ref": "#/$defs/id" },
+        "to": { "$ref": "#/$defs/id" },
+        "kind": {
+          "enum": ["request", "read", "write", "query", "publish", "consume", "authenticate", "dependency", "transfer"]
+        },
+        "label": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "mode": { "enum": ["synchronous", "asynchronous", "batch"] },
+        "truth": { "$ref": "#/$defs/truth" },
+        "evidence": {
+          "type": "array",
+          "maxItems": 5,
+          "items": { "$ref": "#/$defs/evidence" }
+        }
+      }
+    },
+    "group": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "label", "members", "truth"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "kind": { "enum": ["system", "trust", "deployment", "ownership"] },
+        "label": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "members": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/id" }
+        },
+        "truth": { "$ref": "#/$defs/truth" },
+        "evidence": {
+          "type": "array",
+          "maxItems": 5,
+          "items": { "$ref": "#/$defs/evidence" }
+        }
+      }
+    },
+    "unknown": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "question"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "question": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "subject": { "$ref": "#/$defs/id" }
+      }
+    }
+  }
+}

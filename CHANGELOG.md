@@ -2,6 +2,23 @@
 
 本项目遵循语义化版本管理。每个 Skill 的独立版本记录在 `registry/skills.json`。
 
+## 2026-09-05
+
+### 变更
+
+- `system-map` 升级至 1.1.0：未显式指定输出位置时，从本机 `runtime.json` 的 `paths.vault` 定位 Obsidian Vault，语义 JSON 与对应 Excalidraw 笔记默认写入其下的 `20.Excalidraw/系统架构/`；代码仓库目录不再被视为 Vault，显式指定的输出位置仍优先。
+
+### 新增
+
+- 新增 `system-map` 1.0.0，仅在显式调用时读取代码仓库或用户说明，生成带稳定 ID、事实等级、源码证据和软布局提示的架构语义 JSON。
+- 新增固定脚本，统一负责 JSON 骨架创建、结构与引用校验、分层布局，以及在 Obsidian Excalidraw 中新建、保留节点位置同步或重新布局架构图。
+- 第一版只支持架构图；语义 JSON 不保存像素坐标、颜色、箭头折点或 Excalidraw 内部元素字段，生成物默认不纳入 Git。
+
+### 来源与兼容
+
+- 建模原则参考 MIT 许可的 Archify，并保留第三方来源与许可证说明；未引入 Archify 渲染器、Viewer、品牌资源或更新检查器。
+- Obsidian 绘制脚本要求 Excalidraw 插件 1.5.21 或更高版本，脚本源码不会自动复制到 Vault 或修改真实 Obsidian 配置。
+
 ## 2026-09-02
 
 ### 变更
