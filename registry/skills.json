@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "skills": {
     "archify-enhancer": {
-      "version": "1.1.0",
+      "version": "1.2.0",
       "ownership": "first-party",
       "source": "skills/archify-enhancer",
       "target": "codex",
