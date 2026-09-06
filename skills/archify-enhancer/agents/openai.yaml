@@ -1,0 +1,7 @@
+interface:
+  display_name: "Archify Obsidian 增强器"
+  short_description: "复用 Archify，并按项目归属隔离最终 HTML 与资源文件"
+  default_prompt: "使用 $archify-enhancer 生成或更新图表，自动复用已有项目归属，并将唯一最终 HTML 与资源文件分目录保存到 Obsidian。"
+
+policy:
+  allow_implicit_invocation: false

@@ -1,6 +1,14 @@
 {
   "schemaVersion": 1,
   "skills": {
+    "archify-enhancer": {
+      "version": "1.0.0",
+      "ownership": "first-party",
+      "source": "skills/archify-enhancer",
+      "target": "codex",
+      "dependencies": [],
+      "externalDependencies": ["archify"]
+    },
     "log-search": {
       "version": "1.0.0",
       "ownership": "first-party",

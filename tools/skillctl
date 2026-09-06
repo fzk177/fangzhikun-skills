@@ -298,7 +298,7 @@ def validate_skill(skill_name: str, metadata: dict) -> list[str]:
 
 
 def validate_registry(registry: dict) -> list[str]:
-    """校验依赖指向、所有权和源码目录。"""
+    """校验自研与外部依赖、所有权和源码目录。"""
 
     errors = []
     known_names = set(registry["skills"])
@@ -310,6 +310,18 @@ def validate_registry(registry: dict) -> list[str]:
         for dependency in metadata.get("dependencies", []):
             if dependency not in known_names:
                 errors.append(f"{skill_name}: 依赖未登记：{dependency}")
+        external_dependencies = metadata.get("externalDependencies", [])
+        if not isinstance(external_dependencies, list) or not all(
+            isinstance(dependency, str) and dependency.strip()
+            for dependency in external_dependencies
+        ):
+            errors.append(f"{skill_name}: externalDependencies 必须是非空名称组成的数组")
+        else:
+            for dependency in external_dependencies:
+                if dependency in known_names:
+                    errors.append(
+                        f"{skill_name}: 仓库内依赖应登记到 dependencies：{dependency}"
+                    )
         if not source_path(metadata).is_dir():
             errors.append(f"{skill_name}: 源码目录不存在")
     return errors
