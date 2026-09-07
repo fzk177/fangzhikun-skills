@@ -1,7 +1,7 @@
 ---
 name: req-governance
 description: 治理或快速自查 Java Controller 对外接口的 Req/Resp 字段契约，包括模型复用评估、专用模型拆分、OpenAPI 3 Schema、Bean Validation 和 Controller 最小接入。仅适用于用户明确指定接口并要求 Req/Resp 治理或自查，不用于普通 DTO 重构和业务逻辑修改。
-version: 2.0.0
+version: 2.0.1
 ---
 
 # Req/Resp 字段治理
@@ -53,7 +53,9 @@ version: 2.0.0
 
 允许修改目标 Req/Resp、目标接口专用 Req/Resp、目标 Controller 的最小接入代码及对应文档/校验注解。Controller 对外入参必须是 Req，业务返回必须是 Resp，不直接暴露 DTO、Query、Command、PO、Entity、Map 或裸参数。
 
-禁止修改 Service、Facade、Handler、Manager、Mapper、SQL、DTO、Query、Command、PO、Entity、前端、无关接口，以及未经授权的 `pom.xml`、配置、OpenAPI 全局配置和框架代码。Controller 不得新增计算、状态判断、查询、远程调用或回填。旧 Req/Resp 仍有引用时不得删除；无引用时也仅在用户明确要求清理时删除。
+原则上不修改前端代码。只有目标接口的契约调整客观上必须联动前端时，才可将前端纳入拟修复方案；必须在落代码前单独列出拟修改的前端文件、变更和兼容性影响并取得用户明确确认，且该确认不得从后端修复确认中推导。未确认时只报告联动需求，不修改前端。
+
+禁止修改 Service、Facade、Handler、Manager、Mapper、SQL、DTO、Query、Command、PO、Entity、无关接口，以及未经授权的 `pom.xml`、配置、OpenAPI 全局配置和框架代码。Controller 不得新增计算、状态判断、查询、远程调用或回填。旧 Req/Resp 仍有引用时不得删除；无引用时也仅在用户明确要求清理时删除。
 
 若项目缺少 OpenAPI 依赖、文档端点或 Apifox 同步配置，只报告前置问题，未经授权不扩大修改范围。
 

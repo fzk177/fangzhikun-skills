@@ -38,7 +38,7 @@
       "dependencies": []
     },
     "req-governance": {
-      "version": "2.0.0",
+      "version": "2.0.1",
       "ownership": "first-party",
       "source": "skills/req-governance",
       "target": "codex",
