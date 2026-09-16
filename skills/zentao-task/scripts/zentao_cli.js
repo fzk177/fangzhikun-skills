@@ -309,6 +309,9 @@ function getTask(options, taskId) {
   if (!body.task || String(body.task.id || '') !== String(taskId)) {
     throw new Error(`未找到禅道任务 #${taskId}`);
   }
+  if (!Array.isArray(body.task.actions) && Array.isArray(body.actions)) {
+    return { ...body.task, actions: body.actions };
+  }
   return body.task;
 }
 
@@ -325,7 +328,11 @@ function getStory(options, storyId) {
   }
 
   const body = cliJson(options, ['story', String(storyId)]);
-  return body.story || body.data || (String(body.id || '') === String(storyId) ? body : null);
+  const story = body.story || body.data || (String(body.id || '') === String(storyId) ? body : null);
+  if (story && !Array.isArray(story.actions) && Array.isArray(body.actions)) {
+    return { ...story, actions: body.actions };
+  }
+  return story;
 }
 
 /**
@@ -398,7 +405,7 @@ function editableTaskSnapshot(task) {
     pri: String(task.pri ?? ''),
     estimate: numericValue(task.estimate),
     module: objectId(task.module) || '0',
-    story: objectId(task.story || task.storyID) || '0',
+    story: objectId(task.story || task.storyID || task.storyId) || '0',
     desc: String(task.desc || task.description || ''),
   };
 }
