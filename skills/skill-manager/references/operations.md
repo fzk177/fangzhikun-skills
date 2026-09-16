@@ -60,11 +60,22 @@ skill_import_root="$(mktemp -d)"
   --reviewed-directory "$skill_import_root/<skill-name>"
 ```
 
+如果安装内容对应当前源码的一个已提交旧版本，而当前源码已经在该版本之上继续演进，可显式指定该旧版本的完整提交哈希：
+
+```bash
+./tools/skillctl accept-drift <skill-name> \
+  --reviewed-directory "$skill_import_root/<skill-name>" \
+  --source-baseline <完整祖先提交哈希>
+```
+
+旧源码基线必须是当前 `HEAD` 的祖先，且该提交中的目标 Skill 注册信息与当前源码保持相同的所有权、源码路径和部署目标。安装内容必须与该提交中的目标 Skill 除 `SKILL.md` 版本号外完全一致；不得用分支名、远端引用或无关历史替代已经审阅的具体提交哈希。
+
 预览必须展示目标 Skill、源码版本、源码/安装/导出/原部署摘要和完整 64 位计划哈希，然后单独询问是否接受该漂移。用户确认后使用完全相同的导出目录和计划哈希执行：
 
 ```bash
 ./tools/skillctl accept-drift <skill-name> \
   --reviewed-directory "$skill_import_root/<skill-name>" \
+  [--source-baseline <与预览相同的完整祖先提交哈希>] \
   --apply \
   --plan-hash <完整计划哈希>
 ```
@@ -72,9 +83,12 @@ skill_import_root="$(mktemp -d)"
 该命令只更新本机部署状态，不修改源码或安装目录，并保存原部署状态备份。以下任一条件不满足时必须停止：
 
 - 导出目录与当前安装内容完全一致。
-- 源码与当前安装内容除 `SKILL.md` 版本号外完全一致。
+- 未指定旧源码基线时，当前源码与安装内容除 `SKILL.md` 版本号外完全一致。
+- 指定旧源码基线时，基线是当前 `HEAD` 的已提交祖先，基线注册信息与当前源码一致，且基线内容与安装内容除 `SKILL.md` 版本号外完全一致。
 - 目标 Skill 源码和 `registry/skills.json` 没有未提交修改。
 - 执行时重新计算的计划哈希与用户确认值一致。
+
+预览必须额外展示接管基线的完整提交哈希、版本和摘要。基线提交、基线内容、当前源码、安装内容、导出副本或原部署状态任一变化时，原计划哈希失效。
 
 接管成功后状态应为“源码有待部署修改”或“已同步”，再单独生成部署预览；接受漂移不等于授权部署。
 

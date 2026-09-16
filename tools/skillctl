@@ -121,6 +121,89 @@ def normalized_skill_manifest(directory: Path) -> dict[str, str]:
     return result
 
 
+def repository_files_at_commit(commit: str, directory: Path) -> dict[str, bytes]:
+    """读取指定提交中一个仓库目录的普通文件内容，不修改工作区。"""
+
+    relative_directory = directory.relative_to(REPOSITORY_ROOT).as_posix()
+    tree_result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(REPOSITORY_ROOT),
+            "ls-tree",
+            "-r",
+            "-z",
+            "--full-tree",
+            commit,
+            "--",
+            relative_directory,
+        ],
+        capture_output=True,
+        check=False,
+    )
+    if tree_result.returncode != 0:
+        detail = tree_result.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"无法读取接管基线目录：{detail or relative_directory}")
+
+    result = {}
+    directory_prefix = f"{relative_directory}/"
+    for entry in tree_result.stdout.split(b"\0"):
+        if not entry:
+            continue
+        try:
+            metadata_value, path_value = entry.split(b"\t", 1)
+            _, object_type, object_id = metadata_value.decode("ascii").split(" ", 2)
+            repository_path = path_value.decode("utf-8")
+        except (UnicodeDecodeError, ValueError) as error:
+            raise RuntimeError("接管基线目录包含无法解析的 Git 条目") from error
+        if object_type != "blob" or not repository_path.startswith(directory_prefix):
+            continue
+
+        blob_result = subprocess.run(
+            ["git", "-C", str(REPOSITORY_ROOT), "cat-file", "blob", object_id],
+            capture_output=True,
+            check=False,
+        )
+        if blob_result.returncode != 0:
+            raise RuntimeError(f"无法读取接管基线文件：{repository_path}")
+        result[repository_path.removeprefix(directory_prefix)] = blob_result.stdout
+
+    if not result:
+        raise RuntimeError(f"接管基线中不存在目标 Skill 目录：{relative_directory}")
+    return result
+
+
+def content_manifest(contents: dict[str, bytes]) -> dict[str, str]:
+    """为内存中的文件内容生成清单。"""
+
+    return {
+        relative_path: hashlib.sha256(content).hexdigest()
+        for relative_path, content in sorted(contents.items())
+    }
+
+
+def normalized_content_manifest(contents: dict[str, bytes]) -> dict[str, str]:
+    """为提交内文件生成忽略 SKILL.md 版本号后的清单。"""
+
+    result = {}
+    for relative_path, content in sorted(contents.items()):
+        if relative_path == "SKILL.md":
+            try:
+                text = content.decode("utf-8")
+            except UnicodeDecodeError as error:
+                raise RuntimeError("接管基线中的 SKILL.md 不是 UTF-8 文本") from error
+            normalized = re.sub(
+                r"(?m)^version:\s*\d+\.\d+\.\d+\s*$",
+                "version: <normalized>",
+                text,
+                count=1,
+            )
+            result[relative_path] = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        else:
+            result[relative_path] = hashlib.sha256(content).hexdigest()
+    return result
+
+
 def state_path(skill_name: str) -> Path:
     """返回单个 Skill 的部署状态文件。"""
 
@@ -392,6 +475,66 @@ def repository_commit() -> str:
     return result.stdout.strip() if result.returncode == 0 else "working-tree"
 
 
+def resolve_repository_commit(reference: str) -> str:
+    """把用户提供的 Git 引用解析为不可变提交哈希。"""
+
+    if not re.fullmatch(r"[0-9a-fA-F]{40,64}", reference or ""):
+        raise RuntimeError("接管基线必须使用完整 Git 提交哈希")
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(REPOSITORY_ROOT),
+            "rev-parse",
+            "--verify",
+            f"{reference}^{{commit}}",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    commit = result.stdout.strip()
+    if result.returncode != 0 or not re.fullmatch(r"[0-9a-fA-F]{40,64}", commit):
+        raise RuntimeError(f"无法解析接管基线提交：{reference}")
+    return commit.lower()
+
+
+def ensure_ancestor_commit(ancestor: str, descendant: str) -> None:
+    """确认接管基线是当前源码提交的祖先。"""
+
+    result = subprocess.run(
+        ["git", "-C", str(REPOSITORY_ROOT), "merge-base", "--is-ancestor", ancestor, descendant],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode == 1:
+        raise RuntimeError("接管基线不是当前 HEAD 的祖先，禁止接受无关历史中的安装内容")
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise RuntimeError(f"无法验证接管基线祖先关系：{detail or ancestor}")
+
+
+def repository_json_at_commit(commit: str, relative_path: str) -> dict:
+    """读取指定提交中的 JSON 对象。"""
+
+    result = subprocess.run(
+        ["git", "-C", str(REPOSITORY_ROOT), "show", f"{commit}:{relative_path}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"接管基线缺少文件：{relative_path}")
+    try:
+        value = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"接管基线中的 JSON 不合法：{relative_path}") from error
+    if not isinstance(value, dict):
+        raise RuntimeError(f"接管基线中的 JSON 顶层必须是对象：{relative_path}")
+    return value
+
+
 def timestamp() -> str:
     """生成适合作为目录名的本地时间戳。"""
 
@@ -507,7 +650,12 @@ def command_import_local(args: argparse.Namespace, registry: dict) -> int:
     return 0
 
 
-def build_accept_drift_plan(skill_name: str, metadata: dict, reviewed_directory: Path) -> dict:
+def build_accept_drift_plan(
+    skill_name: str,
+    metadata: dict,
+    reviewed_directory: Path,
+    source_baseline: str | None,
+) -> dict:
     """校验已审阅漂移并生成绑定源码、安装内容和导出副本的计划。"""
 
     source_directory = source_path(metadata)
@@ -567,15 +715,46 @@ def build_accept_drift_plan(skill_name: str, metadata: dict, reviewed_directory:
     if reviewed_manifest != installed_manifest:
         raise RuntimeError("已审阅导出目录与当前安装内容不一致，请重新导出并审阅")
 
-    # 只允许源码版本号不同，避免把未合入源码的人工修改登记为合法部署基线。
-    if normalized_skill_manifest(source_directory) != normalized_skill_manifest(target_directory):
-        raise RuntimeError("当前安装漂移尚未完整合入源码，或源码包含版本号以外的额外差异")
+    current_commit = repository_commit()
+    if current_commit == "working-tree":
+        raise RuntimeError("无法读取当前仓库提交，禁止接受漂移")
+
+    if source_baseline:
+        baseline_commit = resolve_repository_commit(source_baseline)
+        ensure_ancestor_commit(baseline_commit, current_commit)
+        baseline_registry = repository_json_at_commit(baseline_commit, "registry/skills.json")
+        baseline_metadata = baseline_registry.get("skills", {}).get(skill_name)
+        if not isinstance(baseline_metadata, dict):
+            raise RuntimeError("接管基线的注册表中不存在目标 Skill")
+        for field_name in ("ownership", "source", "target"):
+            if baseline_metadata.get(field_name) != metadata.get(field_name):
+                raise RuntimeError(f"接管基线的注册信息与当前源码不一致：{field_name}")
+        baseline_contents = repository_files_at_commit(baseline_commit, source_directory)
+        baseline_manifest = content_manifest(baseline_contents)
+        if normalized_content_manifest(baseline_contents) != normalized_skill_manifest(target_directory):
+            raise RuntimeError("当前安装内容与指定旧源码基线除版本号外不一致")
+        baseline_version = baseline_metadata.get("version", "")
+        if not re.fullmatch(r"\d+\.\d+\.\d+", baseline_version):
+            raise RuntimeError("接管基线的注册表版本不合法")
+    else:
+        # 默认流程只允许当前源码版本号不同，避免把未合入源码的人工修改登记为合法部署基线。
+        if normalized_skill_manifest(source_directory) != normalized_skill_manifest(target_directory):
+            raise RuntimeError(
+                "当前安装漂移尚未完整合入源码，或源码包含版本号以外的额外差异；"
+                "若安装内容对应当前 HEAD 的已提交祖先版本，请显式提供 --source-baseline"
+            )
+        baseline_commit = current_commit
+        baseline_manifest = source_manifest
+        baseline_version = metadata["version"]
 
     plan = {
         "skill": skill_name,
         "sourceVersion": metadata["version"],
-        "repositoryCommit": repository_commit(),
+        "repositoryCommit": current_commit,
         "sourceManifest": manifest_digest(source_manifest),
+        "sourceBaselineCommit": baseline_commit,
+        "sourceBaselineVersion": baseline_version,
+        "sourceBaselineManifest": manifest_digest(baseline_manifest),
         "installedManifest": manifest_digest(installed_manifest),
         "reviewedManifest": manifest_digest(reviewed_manifest),
         "previousDeploymentManifest": manifest_digest(deployed_manifest),
@@ -594,12 +773,15 @@ def command_accept_drift(args: argparse.Namespace, registry: dict) -> int:
     if not metadata:
         raise RuntimeError("accept-drift 只支持已登记的自研 Skill")
     reviewed_directory = Path(args.reviewed_directory).expanduser().resolve()
-    plan = build_accept_drift_plan(args.skill, metadata, reviewed_directory)
+    plan = build_accept_drift_plan(args.skill, metadata, reviewed_directory, args.source_baseline)
 
     if not args.apply:
         print(f"Skill: {plan['skill']}")
         print(f"源码版本: {plan['sourceVersion']}")
         print(f"源码摘要: {plan['sourceManifest']}")
+        print(f"接管基线提交: {plan['sourceBaselineCommit']}")
+        print(f"接管基线版本: {plan['sourceBaselineVersion']}")
+        print(f"接管基线摘要: {plan['sourceBaselineManifest']}")
         print(f"安装摘要: {plan['installedManifest']}")
         print(f"导出摘要: {plan['reviewedManifest']}")
         print(f"原部署摘要: {plan['previousDeploymentManifest']}")
@@ -627,6 +809,8 @@ def command_accept_drift(args: argparse.Namespace, registry: dict) -> int:
         "version": frontmatter(target_directory / "SKILL.md").get("version", previous_state.get("version", "")),
         "adoptedAt": adopted_at,
         "adoptedAgainstRepositoryCommit": plan["repositoryCommit"],
+        "adoptedSourceBaselineCommit": plan["sourceBaselineCommit"],
+        "adoptedSourceBaselineVersion": plan["sourceBaselineVersion"],
         "adoptionBackup": str(adoption_backup),
         "source": str(source_path(metadata)),
         "target": str(target_directory),
@@ -745,6 +929,10 @@ def build_parser() -> argparse.ArgumentParser:
     accept_drift_parser = subparsers.add_parser("accept-drift")
     accept_drift_parser.add_argument("skill")
     accept_drift_parser.add_argument("--reviewed-directory", required=True)
+    accept_drift_parser.add_argument(
+        "--source-baseline",
+        help="安装内容对应的已提交祖先源码版本；默认使用当前源码",
+    )
     accept_drift_parser.add_argument("--apply", action="store_true")
     accept_drift_parser.add_argument("--plan-hash")
 
