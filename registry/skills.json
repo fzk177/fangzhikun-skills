@@ -73,7 +73,7 @@
       "dependencies": ["log-search", "mysql-search", "java-backend-code"]
     },
     "zentao-debug": {
-      "version": "2.0.0",
+      "version": "2.1.0",
       "ownership": "first-party",
       "source": "skills/zentao-debug",
       "target": "codex",
