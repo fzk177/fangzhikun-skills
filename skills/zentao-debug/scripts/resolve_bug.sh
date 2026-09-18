@@ -2,25 +2,44 @@
 
 set -euo pipefail
 
-# 此脚本只允许把一个尚未解决的 Bug 标记为 fixed，并在同一次解决动作中写入固定四段备注。
+# 此脚本只允许把一个尚未解决的 Bug 标记为 fixed，并在同一次解决动作中写入已确认的解决版本、解决日期、指派人和固定四段备注。
 # 调用方必须已经展示完整同步预览并取得用户对本次禅道写入的明确确认。
 
 readonly CONFIG_BASE="${XDG_CONFIG_HOME:-$HOME/.config}"
 readonly RUNTIME_CONFIG="${FANGZHIKUN_SKILLS_CONFIG:-${CONFIG_BASE}/fangzhikun-skills/runtime.json}"
 
-if [ "$#" -ne 5 ]; then
-    echo "用法: resolve_bug.sh <bug-id> <涉及模块> <主要调整> <验收口径> <其他影响>" >&2
+if [ "$#" -ne 8 ]; then
+    echo "用法: resolve_bug.sh <bug-id> <解决版本值> <解决日期> <指派账号或@openedBy> <涉及模块> <主要调整> <验收口径> <其他影响>" >&2
     exit 2
 fi
 
 readonly BUG_ID="$1"
-readonly AFFECTED_MODULES="$2"
-readonly MAIN_CHANGES="$3"
-readonly ACCEPTANCE_CRITERIA="$4"
-readonly OTHER_IMPACTS="$5"
+readonly RESOLVED_BUILD="$2"
+readonly RESOLVED_DATE="$3"
+readonly ASSIGNED_TO_INPUT="$4"
+readonly AFFECTED_MODULES="$5"
+readonly MAIN_CHANGES="$6"
+readonly ACCEPTANCE_CRITERIA="$7"
+readonly OTHER_IMPACTS="$8"
 
 if ! printf '%s' "$BUG_ID" | grep -Eq '^[0-9]+$'; then
     echo "Bug ID 必须为纯数字" >&2
+    exit 2
+fi
+
+if ! printf '%s' "$RESOLVED_BUILD" | grep -Eq '^(trunk|[0-9]+)$'; then
+    echo "解决版本值必须为受控候选中的 trunk 或纯数字版本 ID" >&2
+    exit 2
+fi
+
+if ! printf '%s' "$RESOLVED_DATE" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}$'; then
+    echo "解决日期格式必须为 yyyy-MM-dd HH:mm:ss" >&2
+    exit 2
+fi
+
+if [ "$ASSIGNED_TO_INPUT" != "@openedBy" ] && \
+    ! printf '%s' "$ASSIGNED_TO_INPUT" | grep -Eq '^[A-Za-z0-9_.@-]+$'; then
+    echo "指派人必须为禅道账号，或使用 @openedBy 表示 Bug 创建人" >&2
     exit 2
 fi
 
@@ -131,14 +150,35 @@ fi
 
 current_status="$(printf '%s' "$bug_json" | jq -r '.bug.status // empty')"
 current_resolution="$(printf '%s' "$bug_json" | jq -r '.bug.resolution // empty')"
+bug_opened_by="$(printf '%s' "$bug_json" | jq -r '.bug.openedBy // empty')"
+
+if [ "$ASSIGNED_TO_INPUT" = "@openedBy" ]; then
+    if [ -z "$bug_opened_by" ]; then
+        echo "Bug #$BUG_ID 创建人为空，无法使用默认指派规则" >&2
+        exit 1
+    fi
+    resolved_assigned_to="$bug_opened_by"
+else
+    resolved_assigned_to="$ASSIGNED_TO_INPUT"
+fi
+readonly resolved_assigned_to
 
 if [ "$current_status" = "resolved" ] || [ "$current_status" = "closed" ]; then
     if [ "$current_status" = "resolved" ] && [ "$current_resolution" = "fixed" ] && \
+        printf '%s' "$bug_json" | jq -e --arg resolved_build "$RESOLVED_BUILD" \
+            '((.bug.resolvedBuild // "") | tostring | split(",") | index($resolved_build)) != null' >/dev/null && \
+        printf '%s' "$bug_json" | jq -e --arg resolved_date "$RESOLVED_DATE" \
+            '(.bug.resolvedDate // "") == $resolved_date' >/dev/null && \
+        printf '%s' "$bug_json" | jq -e --arg assigned_to "$resolved_assigned_to" \
+            '(.bug.assignedTo // "") == $assigned_to' >/dev/null && \
         printf '%s' "$bug_json" | jq -e --arg comment "$BUG_COMMENT" \
             'any(.actions[]?; (.comment // "") == $comment)' >/dev/null; then
         jq -n --arg id "$BUG_ID" --arg status "$current_status" --arg resolution "$current_resolution" \
-            --arg comment "$BUG_COMMENT" \
-            '{bugID: ($id | tonumber), status: $status, resolution: $resolution, comment: $comment, changed: false}'
+            --arg resolvedBuild "$RESOLVED_BUILD" --arg resolvedDate "$RESOLVED_DATE" \
+            --arg assignedTo "$resolved_assigned_to" --arg comment "$BUG_COMMENT" \
+            '{bugID: ($id | tonumber), status: $status, resolution: $resolution,
+              resolvedBuild: $resolvedBuild, resolvedDate: $resolvedDate,
+              assignedTo: $assignedTo, comment: $comment, changed: false}'
         exit 0
     fi
 
@@ -146,9 +186,27 @@ if [ "$current_status" = "resolved" ] || [ "$current_status" = "closed" ]; then
     exit 1
 fi
 
+readonly SCRIPT_DIRECTORY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+resolved_builds_json="$(bash "$SCRIPT_DIRECTORY/fetch_resolved_builds.sh" "$BUG_ID" 2>&1)" || {
+    printf '%s\n' "$resolved_builds_json" >&2
+    echo "解决版本候选校验失败；未发起解决请求" >&2
+    exit 1
+}
+
+if ! printf '%s' "$resolved_builds_json" | jq -e --arg resolved_build "$RESOLVED_BUILD" \
+    'any(.candidates[]?; .value == $resolved_build)' >/dev/null; then
+    echo "所选解决版本已不在当前候选列表中；未发起解决请求" >&2
+    exit 1
+fi
+
+resolved_build_name="$(printf '%s' "$resolved_builds_json" | jq -r --arg resolved_build "$RESOLVED_BUILD" \
+    '.candidates[] | select(.value == $resolved_build) | .name' | head -n 1)"
+readonly resolved_build_name
+
 resolve_output=""
 if ! resolve_output="$($ZENTAO_BIN --format=raw --machine-readable bug resolve "$BUG_ID" \
-    --resolution=fixed --comment="$BUG_COMMENT" 2>&1)"; then
+    --resolution=fixed --resolvedBuild="$RESOLVED_BUILD" --resolvedDate="$RESOLVED_DATE" \
+    --assignedTo="$resolved_assigned_to" --comment="$BUG_COMMENT" 2>&1)"; then
     printf '%s\n' "$resolve_output" >&2
     echo "解决请求失败；未自动重试，请重新查询 Bug 实际状态" >&2
     exit 1
@@ -162,16 +220,30 @@ resolved_json="$(query_bug 2>&1)" || {
 
 resolved_status="$(printf '%s' "$resolved_json" | jq -r '.bug.status // empty')"
 resolved_resolution="$(printf '%s' "$resolved_json" | jq -r '.bug.resolution // empty')"
+resolved_date="$(printf '%s' "$resolved_json" | jq -r '.bug.resolvedDate // empty')"
+resolved_assigned_to_actual="$(printf '%s' "$resolved_json" | jq -r '.bug.assignedTo // empty')"
 
 if [ "$resolved_status" != "resolved" ] || [ "$resolved_resolution" != "fixed" ] || \
+    ! printf '%s' "$resolved_json" | jq -e --arg resolved_build "$RESOLVED_BUILD" \
+        '((.bug.resolvedBuild // "") | tostring | split(",") | index($resolved_build)) != null' >/dev/null || \
+    [ "$resolved_date" != "$RESOLVED_DATE" ] || \
+    [ "$resolved_assigned_to_actual" != "$resolved_assigned_to" ] || \
     ! printf '%s' "$resolved_json" | jq -e --arg comment "$BUG_COMMENT" \
         'any(.actions[]?; (.comment // "") == $comment)' >/dev/null; then
     echo "解决请求后的回读结果不一致；不得自动重试写入" >&2
     jq -n --arg id "$BUG_ID" --arg status "$resolved_status" --arg resolution "$resolved_resolution" \
-        '{bugID: ($id | tonumber), observedStatus: $status, observedResolution: $resolution}' >&2
+        --arg resolvedDate "$resolved_date" --arg assignedTo "$resolved_assigned_to_actual" \
+        '{bugID: ($id | tonumber), observedStatus: $status, observedResolution: $resolution,
+          observedResolvedDate: $resolvedDate, observedAssignedTo: $assignedTo}' >&2
     exit 1
 fi
 
 jq -n --arg id "$BUG_ID" --arg status "$resolved_status" --arg resolution "$resolved_resolution" \
+    --arg resolvedBuild "$RESOLVED_BUILD" --arg resolvedBuildName "$resolved_build_name" \
+    --arg resolvedDate "$resolved_date" --arg assignedTo "$resolved_assigned_to_actual" \
     --arg comment "$BUG_COMMENT" \
-    '{bugID: ($id | tonumber), status: $status, resolution: $resolution, comment: $comment, changed: true}'
+    '{bugID: ($id | tonumber), status: $status, resolution: $resolution,
+      resolvedBuild: $resolvedBuild, resolvedBuildName: $resolvedBuildName,
+      resolvedDate: $resolvedDate, assignedTo: $assignedTo,
+      createdBuild: false, attachmentsUploaded: false,
+      comment: $comment, changed: true}'
