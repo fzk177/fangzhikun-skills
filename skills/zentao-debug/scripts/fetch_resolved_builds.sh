@@ -127,14 +127,14 @@ builds_json='{"builds":[]}'
 if printf '%s' "$project_id" | grep -Eq '^[1-9][0-9]*$'; then
     context_type="project"
     context_id="$project_id"
-    builds_json="$($ZENTAO_BIN --format=raw --machine-readable list --all --project "$project_id" build 2>&1)" || {
+    builds_json="$($ZENTAO_BIN --format=raw --machine-readable build --all --project="$project_id" 2>&1)" || {
         printf '%s\n' "$builds_json" >&2
         exit 1
     }
 elif printf '%s' "$execution_id" | grep -Eq '^[1-9][0-9]*$'; then
     context_type="execution"
     context_id="$execution_id"
-    builds_json="$($ZENTAO_BIN --format=raw --machine-readable list --all --execution "$execution_id" build 2>&1)" || {
+    builds_json="$($ZENTAO_BIN --format=raw --machine-readable build --all --execution="$execution_id" 2>&1)" || {
         printf '%s\n' "$builds_json" >&2
         exit 1
     }

@@ -63,6 +63,16 @@
 
 重复维护时只替换相同任务 ID 的标记区域，保留其余人工内容。
 
+## Codex 会话关联区域
+
+显式 `$zentao-task` 会话由全局 Codex 同步程序按 `zentaoSourceType=task` 与 `zentaoId` 自动关联。任务交付记录存在后，同步程序维护以下投影：
+
+- 交付 Frontmatter 中由 `# codex:auto:sessions:start/end` 包围的 `codexSessions`。
+- 交付正文中的 `<!-- codex:auto:sessions:start/end -->` 会话列表。
+- Project Manager 任务正文中的 `<!-- codex:auto:conversation-links:start/end -->` 工作记录。
+
+对话笔记中的 `project_task_links` 是关联事实源，上述内容都可重建。本 skill 不手工修改这些区域；首次只读分析阶段只允许对话归档建立正向链接，不写 Project Manager 任务或交付记录。
+
 ## 上线准备增量区域
 
 在上线准备记录中维护任务的上线范围、服务或前端包、脚本、顺序、验证和回滚。使用独立稳定标记：
