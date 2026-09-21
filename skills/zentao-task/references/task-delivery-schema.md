@@ -71,6 +71,20 @@
 
 对话笔记中的 `project_task_links` 是关联事实源，上述内容都可重建。本 skill 不手工修改这些区域；首次只读分析阶段只允许对话归档建立正向链接，不写 Project Manager 任务或交付记录。
 
+## 分支交付关联区域
+
+任务交付记录应用后，`git-branch-delivery` 共享核心脚本按仓库和分支建立独立分支记录。分支记录保存 `task:<任务ID>`、迭代 ID、Commit 和 Codex Session；任务交付正文通过以下区域保存可重建的反向投影：
+
+```markdown
+<!-- branch-delivery:auto:links:start -->
+<!-- branch-delivery:auto:links:end -->
+```
+
+- 分支不是 `pm-task`，不进入 Project Manager 任务层级、工时、进度或甘特图。
+- `repositories`、`branches`、`baseCommits` 和 `changedFiles` 继续兼容既有记录；结构化分支事实以 `04.项目/00.分支管理/04.数据支持/branches` 为准。
+- 分支名和 Commit 备注只可用于候选关联；任务交付记录应用或用户明确确认后才形成正式关联。
+- HEAD 变化后旧上线检查自动失效，但任务历史关联和原 Codex 会话不得删除。
+
 ## 上线准备增量区域
 
 在上线准备记录中维护任务的上线范围、服务或前端包、脚本、顺序、验证和回滚。使用独立稳定标记：

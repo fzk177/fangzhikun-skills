@@ -13,6 +13,11 @@ node "${CODEX_HOME:-$HOME/.codex}/skills/zentao-task/scripts/task_delivery_recor
   --real-started "<最终实际开始时间>" \
   --finished-date "<代码确认时间>" \
   --vault "<vault目录>" \
+  --repository "<仓库路径>" \
+  --branch "<确认分支>" \
+  --base-commit "<编码前基线>" \
+  --head-commit "<最终提交或确认时HEAD>" \
+  --session-id "${CODEX_SESSION_ID:-<当前会话ID>}" \
   --changed-file "<修改文件>"
 ```
 
@@ -21,6 +26,7 @@ node "${CODEX_HOME:-$HOME/.codex}/skills/zentao-task/scripts/task_delivery_recor
 3. `start`、`due` 保留计划日期；实际时间写入 `actualStartedAt`、`actualFinishedAt`，`completed` 只保存完成日期。
 4. `changed-file` 使用阶段三确认的完整文件清单；即使已提交且 `git diff` 为空也不能丢失。
 5. 同步记录 Git 决策：已提交时记录各仓库分支、提交哈希和最终备注；暂不提交时记录未提交状态。
+6. 应用记录后由共享分支交付脚本建立 `task:<任务ID>`、迭代、仓库、分支、Commit 和 Codex Session 的关联，并在任务交付记录中维护受控反向链接；该动作不修改 Project Manager 任务层级。
 
 ## 阶段五：项目管理与上线资料
 
@@ -30,5 +36,6 @@ node "${CODEX_HOME:-$HOME/.codex}/skills/zentao-task/scripts/task_delivery_recor
 4. `### 回滚脚本` 必须单独维护：存在正式脚本时粘贴完整 SQL；不存在时用 `zentao-task-release-rollback-script:<任务ID>` 标明“无独立回滚脚本”及安全限制，禁止臆造截断数据或不可逆的回滚 SQL。
 5. 检查新内容是否含 `password`、`token`、`secret`、`zentaosid` 等敏感值；命中时立即停止且不展示敏感值。
 6. 资料完成后先预览再应用 `docs-complete` 阶段，该动作只更新本地交付状态，并作为本 Skill 的最终阶段。
+7. 若 `docs-complete` 仍传入仓库与分支，则刷新分支交付投影中的任务状态和迭代关联；不根据禅道任务完成状态自动写入 QA 或业务验收通过。
 
 完成后汇报任务文件、交付记录、项目管理、上线准备、Git 决策和工时变化，并明确禅道任务状态、备注和指派均未修改；如有需要，由用户在网页版手工处理。

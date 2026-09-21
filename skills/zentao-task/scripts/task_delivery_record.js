@@ -5,6 +5,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { spawnSync } = require('child_process');
 
 const {
   accountValue,
@@ -39,7 +40,9 @@ function printHelp() {
     '  --repository <路径>         涉及仓库，可重复传入',
     '  --branch <分支>             涉及分支，可重复传入',
     '  --base-commit <提交>        编码前基线提交，可重复传入',
+    '  --head-commit <提交>        当前交付提交，可重复传入',
     '  --changed-file <路径>       本次修改文件，可重复传入',
+    '  --session-id <会话ID>       关联 Codex 会话，可重复传入；默认读取当前会话环境变量',
     '  --config <文件>             zentao-cli 配置文件',
     '  --cli <文件>                zentao-cli 可执行文件，默认 zentao',
     '  --apply                     实际更新本地知识库；不传时只预览',
@@ -63,10 +66,12 @@ function parseArgs(argv) {
     changedFiles: [],
     eventAt: '',
     finishedDate: '',
+    headCommits: [],
     phase: '',
     projectsFolder: '',
     realStarted: '',
     repositories: [],
+    sessionIds: process.env.CODEX_SESSION_ID ? [process.env.CODEX_SESSION_ID] : [],
     vault: process.cwd(),
   };
 
@@ -82,7 +87,7 @@ function parseArgs(argv) {
       continue;
     }
 
-    if (['--repository', '--branch', '--base-commit', '--changed-file'].includes(argument)) {
+    if (['--repository', '--branch', '--base-commit', '--head-commit', '--changed-file', '--session-id'].includes(argument)) {
       const value = argv[index + 1];
       if (!value) {
         throw new Error(`${argument} 缺少参数值`);
@@ -91,7 +96,9 @@ function parseArgs(argv) {
         '--repository': 'repositories',
         '--branch': 'branches',
         '--base-commit': 'baseCommits',
+        '--head-commit': 'headCommits',
         '--changed-file': 'changedFiles',
+        '--session-id': 'sessionIds',
       };
       options[keyMap[argument]].push(value);
       index += 1;
@@ -525,8 +532,79 @@ function buildPlan(options) {
     phase: options.phase,
     taskFile: path.relative(vault, taskFile),
     deliveryFile: path.relative(vault, deliveryFile),
+    source: {
+      title: context.title,
+      executionId: context.executionId,
+      storyId: context.storyId,
+      workflowStatus: fields.workflowStatus || frontmatterValue(existingDelivery, 'workflowStatus') || 'planned',
+    },
+    branchSyncPlanned: options.repositories.length > 0 && options.branches.length > 0,
     changes,
   };
+}
+
+/**
+ * 读取简单 Frontmatter 顶层字段。
+ *
+ * @param {string} content Markdown 内容
+ * @param {string} key 字段名
+ * @returns {string} 字段值
+ */
+function frontmatterValue(content, key) {
+  const match = String(content || '').match(new RegExp(`^${key}:\\s*["']?([^"'\\n]+)`, 'm'));
+  return match ? match[1].trim() : '';
+}
+
+/**
+ * 将任务交付记录投影到独立分支交付中心。
+ *
+ * 共享脚本只读 Git，并只写 Obsidian 受控区域；同步失败时明确报错，
+ * 不回退已经成功写入的任务交付事实。
+ *
+ * @param {object} plan 已应用的任务交付计划
+ * @param {object} options 命令选项
+ * @returns {object|null} 分支同步结果
+ */
+function syncBranchDelivery(plan, options) {
+  if (!plan.branchSyncPlanned) {
+    return null;
+  }
+  if (options.repositories.length !== options.branches.length) {
+    throw new Error('分支交付同步要求 --repository 与 --branch 数量一致');
+  }
+  const script = path.join(
+    process.env.CODEX_HOME || path.join(process.env.HOME || '', '.codex'),
+    'skills',
+    'git-branch-delivery',
+    'scripts',
+    'branch_delivery_core.js',
+  );
+  if (!fs.existsSync(script)) {
+    throw new Error(`任务交付记录已更新，但缺少分支交付核心脚本：${script}`);
+  }
+  const args = [
+    script,
+    'sync-source',
+    '--vault', path.resolve(options.vault),
+    '--source-type', 'task',
+    '--source-id', String(plan.taskId),
+    '--title', plan.source.title,
+    '--note-path', plan.deliveryFile,
+    '--relation', '直接实现',
+    '--source-status', plan.source.workflowStatus,
+  ];
+  if (plan.source.executionId) args.push('--execution-id', plan.source.executionId);
+  if (plan.source.storyId) args.push('--story-id', plan.source.storyId);
+  for (const repository of options.repositories) args.push('--repository', repository);
+  for (const branch of options.branches) args.push('--branch', branch);
+  for (const baseCommit of options.baseCommits) args.push('--base-commit', baseCommit);
+  for (const headCommit of options.headCommits) args.push('--head-commit', headCommit);
+  for (const sessionId of [...new Set(options.sessionIds.filter(Boolean))]) args.push('--session-id', sessionId);
+  const result = spawnSync(process.execPath, args, { encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 });
+  if (result.status !== 0) {
+    throw new Error(`任务交付记录已更新，但分支交付同步失败：${String(result.stderr || result.stdout || '').trim()}`);
+  }
+  return result.stdout.trim() ? JSON.parse(result.stdout) : null;
 }
 
 /**
@@ -561,6 +639,7 @@ function printPlan(plan, asJson) {
   console.log(`任务文件：${plan.taskFile}`);
   console.log(`交付记录：${plan.deliveryFile}`);
   console.log(`文件变更：${plan.changes.length}`);
+  console.log(`分支交付联动：${plan.branchSyncPlanned ? '应用阶段将同步' : '本次未提供完整仓库与分支'}`);
   for (const change of plan.changes) {
     console.log(`- ${change.type === 'create' ? '新增' : '更新'} ${change.relativePath}`);
   }
@@ -580,9 +659,12 @@ function main() {
   }
 
   const plan = buildPlan(options);
+  let branchSync = null;
   if (options.apply) {
     applyChanges(plan.changes);
+    branchSync = syncBranchDelivery(plan, options);
   }
+  plan.branchSync = branchSync;
   printPlan(plan, options.json);
 }
 

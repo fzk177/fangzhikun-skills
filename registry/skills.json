@@ -87,11 +87,12 @@
       "dependencies": []
     },
     "zentao-task": {
-      "version": "2.0.0",
+      "version": "2.1.0",
       "ownership": "first-party",
       "source": "skills/zentao-task",
       "target": "codex",
-      "dependencies": ["zentao-project-manager", "java-backend-code"]
+      "dependencies": ["zentao-project-manager", "java-backend-code"],
+      "externalDependencies": ["git-branch-delivery"]
     }
   }
 }
