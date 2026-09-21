@@ -183,6 +183,121 @@ function cliJson(options, args) {
 }
 
 /**
+ * 从本地配置中读取当前禅道 Profile。
+ *
+ * 专用 REST API 需要使用当前 Profile 的服务地址和 Token；这里不输出任何认证信息。
+ *
+ * @param {object} options 公共选项
+ * @returns {object} 当前 Profile
+ */
+function readCurrentConfigProfile(options) {
+  let config;
+  try {
+    config = JSON.parse(fs.readFileSync(options.config, 'utf8'));
+  } catch (error) {
+    throw new Error(`无法读取禅道 CLI 配置：${redactSensitiveText(error.message)}`);
+  }
+
+  const profiles = Array.isArray(config.profiles) ? config.profiles : [];
+  const configuredProfile = profiles.find((profile) => profile.key === config.currentProfile
+    || `${profile.account}@${profile.server}` === config.currentProfile);
+  const profile = configuredProfile || profiles.find((item) => item.current) || profiles[0];
+  if (!profile || !profile.server || !profile.token) {
+    const profileError = new Error('禅道 CLI 当前 Profile 缺少服务地址或认证信息，请先恢复登录');
+    profileError.authCode = '1001';
+    throw profileError;
+  }
+  return profile;
+}
+
+/**
+ * 调用禅道专用 REST API 并解析 JSON，不自动恢复登录。
+ *
+ * @param {object} options 公共选项
+ * @param {string} route API 路由
+ * @param {object} data 请求数据
+ * @returns {Promise<object>} 禅道响应
+ */
+async function rawApiJson(options, route, data) {
+  const profile = readCurrentConfigProfile(options);
+  const server = String(profile.server).replace(/\/+$/, '');
+  const url = `${server}/api.php/v1/${String(route).replace(/^\/+/, '')}`;
+  let response;
+  let responseText = '';
+
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Token: profile.token,
+      },
+      body: JSON.stringify(data),
+      signal: AbortSignal.timeout(CLI_TIMEOUT_MS),
+    });
+    responseText = await response.text();
+  } catch (error) {
+    throw new Error(`禅道 REST API 请求失败：${redactSensitiveText(error.message)}`);
+  }
+
+  let body;
+  try {
+    body = responseText ? JSON.parse(responseText) : {};
+  } catch (error) {
+    const apiError = new Error(`禅道 REST API 返回的不是有效 JSON：${redactSensitiveText(error.message)}`);
+    apiError.authCode = response.status === 401 || response.status === 403
+      ? '1001'
+      : findErrorCode(responseText);
+    throw apiError;
+  }
+
+  if (!response.ok || body.status === 'fail' || body.error) {
+    const detail = JSON.stringify(body.error || body.message || body);
+    const apiError = new Error(`禅道 REST API 调用失败：${redactSensitiveText(detail)}`);
+    apiError.authCode = response.status === 401 || response.status === 403
+      ? '1001'
+      : findErrorCode(detail);
+    throw apiError;
+  }
+  return body;
+}
+
+/**
+ * 调用禅道专用 REST API，认证失效时只允许通过钥匙串恢复一次。
+ *
+ * @param {object} options 公共选项
+ * @param {string} route API 路由
+ * @param {object} data 请求数据
+ * @returns {Promise<object>} 禅道响应
+ */
+async function apiJson(options, route, data) {
+  try {
+    return await rawApiJson(options, route, data);
+  } catch (error) {
+    if (error.authCode !== '1001' && error.authCode !== '1004') {
+      throw error;
+    }
+
+    restoreLoginFromKeychain(options);
+    return rawApiJson(options, route, data);
+  }
+}
+
+/**
+ * 使用禅道任务专用指派接口更新指派人。
+ *
+ * 该接口不会经过任务通用编辑流程，避免已完成任务的实际开始和实际完成时间被重置。
+ *
+ * @param {object} options 公共选项
+ * @param {string} taskId 任务 ID
+ * @param {object} data 指派数据
+ * @returns {Promise<object>} 禅道响应
+ */
+function assignTask(options, taskId, data) {
+  return apiJson(options, `tasks/${taskId}/assignto`, data);
+}
+
+/**
  * 获取单个禅道任务。
  *
  * @param {object} options 公共选项
@@ -275,6 +390,27 @@ function normalizeDateTime(value, label) {
 }
 
 /**
+ * 返回任务可编辑字段的完整快照，防止 PUT 缺省字段被重置。
+ *
+ * @param {object} task 禅道任务
+ * @returns {object} 可编辑字段快照
+ */
+function editableTaskSnapshot(task) {
+  return {
+    name: String(task.name || ''),
+    type: String(task.type || ''),
+    assignedTo: accountValue(task.assignedTo),
+    estStarted: String(task.estStarted || '').slice(0, 10),
+    deadline: String(task.deadline || '').slice(0, 10),
+    pri: String(task.pri ?? ''),
+    estimate: numericValue(task.estimate),
+    module: objectId(task.module) || '0',
+    story: objectId(task.story || task.storyID || task.storyId) || '0',
+    desc: String(task.desc || task.description || ''),
+  };
+}
+
+/**
  * 构造脚本公共默认选项。
  *
  * @returns {object} 默认选项
@@ -310,8 +446,10 @@ function readProjectsFolder(vault, explicitFolder) {
 
 module.exports = {
   accountValue,
+  assignTask,
   cliJson,
   defaultOptions,
+  editableTaskSnapshot,
   getStory,
   getTask,
   normalizeDateTime,

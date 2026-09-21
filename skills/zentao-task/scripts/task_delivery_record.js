@@ -29,7 +29,9 @@ function printHelp() {
     '阶段:',
     '  coding             方案确认后创建交付记录并保存实际编码开始时间',
     '  code-confirmed     代码确认后更新本地 Project Manager 完成事实、时间和工时',
-    '  docs-complete      项目管理与上线资料维护完成，并结束本地交付',
+    '  docs-complete      项目管理与上线资料维护完成',
+    '  zentao-completed   禅道完成工作流执行且回读成功',
+    '  assigned           用户确认后已完成任务的最终指派',
     '',
     '选项:',
     '  --vault <目录>              Obsidian vault 根目录，默认当前目录',
@@ -37,6 +39,7 @@ function printHelp() {
     '  --real-started <时间>       实际编码开始时间，格式 YYYY-MM-DD HH:mm:ss',
     '  --finished-date <时间>      代码确认时间，格式 YYYY-MM-DD HH:mm:ss',
     '  --event-at <时间>           当前阶段完成时间，格式 YYYY-MM-DD HH:mm:ss',
+    '  --assigned-to <账号>        最终指派的禅道账号',
     '  --repository <路径>         涉及仓库，可重复传入',
     '  --branch <分支>             涉及分支，可重复传入',
     '  --base-commit <提交>        编码前基线提交，可重复传入',
@@ -61,6 +64,7 @@ function parseArgs(argv) {
   const options = {
     ...defaultOptions(),
     apply: false,
+    assignedTo: '',
     baseCommits: [],
     branches: [],
     changedFiles: [],
@@ -105,7 +109,7 @@ function parseArgs(argv) {
       continue;
     }
 
-    if (['--phase', '--vault', '--projects-folder', '--real-started', '--finished-date', '--event-at', '--config', '--cli'].includes(argument)) {
+    if (['--phase', '--vault', '--projects-folder', '--real-started', '--finished-date', '--event-at', '--assigned-to', '--config', '--cli'].includes(argument)) {
       const value = argv[index + 1];
       if (!value) {
         throw new Error(`${argument} 缺少参数值`);
@@ -117,6 +121,7 @@ function parseArgs(argv) {
         '--real-started': 'realStarted',
         '--finished-date': 'finishedDate',
         '--event-at': 'eventAt',
+        '--assigned-to': 'assignedTo',
         '--config': 'config',
         '--cli': 'cli',
       };
@@ -146,7 +151,7 @@ function parseArgs(argv) {
   if (!options.taskId) {
     throw new Error('必须指定 --task <任务ID>');
   }
-  if (!['coding', 'code-confirmed', 'docs-complete'].includes(options.phase)) {
+  if (!['coding', 'code-confirmed', 'docs-complete', 'zentao-completed', 'assigned'].includes(options.phase)) {
     throw new Error('--phase 不是受支持的交付阶段');
   }
   if (['coding', 'code-confirmed'].includes(options.phase)) {
@@ -158,8 +163,11 @@ function parseArgs(argv) {
       throw new Error('代码确认时间不能早于实际编码开始时间');
     }
   }
-  if (options.phase === 'docs-complete') {
+  if (['docs-complete', 'zentao-completed', 'assigned'].includes(options.phase)) {
     options.eventAt = normalizeDateTime(options.eventAt, '--event-at');
+  }
+  if (options.phase === 'assigned' && !options.assignedTo) {
+    throw new Error('assigned 阶段必须提供 --assigned-to');
   }
   return options;
 }
@@ -297,7 +305,7 @@ function upsertCustomField(lines, key, value) {
  * 按确认结果更新本地 Project Manager 任务。
  *
  * 阶段和状态继续保留禅道当前原始值；代码确认只记录本地完成事实，
- * 禅道任务状态由用户在网页版手工维护。
+ * 禅道完成工作流执行后再由项目同步脚本回读最新原始状态。
  *
  * @param {string} content 原文件内容
  * @param {object} values 目标字段
@@ -317,7 +325,7 @@ function updateLocalTaskContent(content, values) {
   upsertCustomField(lines, 'remainingHours', 0);
   upsertCustomField(lines, 'actualStartedAt', values.realStarted);
   upsertCustomField(lines, 'actualFinishedAt', values.finishedDate);
-  upsertCustomField(lines, 'deliveryStatus', 'manual-zentao');
+  upsertCustomField(lines, 'deliveryStatus', 'pending-zentao');
   return `---\n${lines.join('\n')}\n---\n${split.body}`;
 }
 
@@ -356,6 +364,9 @@ function renderNewDeliveryNote(context) {
     'codingStartedAt: ""',
     'codeConfirmedAt: ""',
     'documentationCompletedAt: ""',
+    'zentaoCompletedAt: ""',
+    'assignedAt: ""',
+    'assignedTo: ""',
     'repositories: []',
     'branches: []',
     'baseCommits: []',
@@ -484,6 +495,9 @@ function buildPlan(options) {
     fields.workflowStatus = 'coding';
     fields.codingStartedAt = options.realStarted;
   } else if (options.phase === 'code-confirmed') {
+    if (!['wait', 'doing'].includes(String(task.status || '').toLowerCase())) {
+      throw new Error(`禅道任务当前状态为 ${task.status}，不能直接记录待写回的本地完成事实`);
+    }
     const targetConsumed = numericValue(task.consumed) + numericValue(task.left);
     taskContent = updateLocalTaskContent(taskContent, {
       completedBy: String(task.assignedToRealName || accountValue(task.assignedTo)),
@@ -497,6 +511,13 @@ function buildPlan(options) {
   } else if (options.phase === 'docs-complete') {
     fields.workflowStatus = 'documented';
     fields.documentationCompletedAt = options.eventAt;
+  } else if (options.phase === 'zentao-completed') {
+    fields.workflowStatus = 'zentao-completed';
+    fields.zentaoCompletedAt = options.eventAt;
+  } else if (options.phase === 'assigned') {
+    fields.workflowStatus = 'complete';
+    fields.assignedAt = options.eventAt;
+    fields.assignedTo = options.assignedTo;
   }
 
   const deliveryContent = updateDeliveryNote(existingDelivery, fields);

@@ -27,20 +27,22 @@
 |---|---|
 | `planned` | 已创建记录，尚未编码 |
 | `coding` | 方案已确认并开始编码 |
-| `local-completed` | 用户确认代码，本地任务已记录完成事实 |
-| `documented` | 项目管理和上线资料已维护，本地交付结束 |
+| `local-completed` | 用户确认代码，本地任务已标记待写回完成 |
+| `documented` | 项目管理和上线资料已维护 |
+| `zentao-completed` | 禅道完成工作流已执行并回读 |
+| `complete` | 最终指派决策已经处理 |
 
 ## 时间和工时字段
 
 - `start`、`due`：Project Manager 计划日期，不能被实际时间覆盖。
 - `stage`：直接保留禅道任务原始 `type`；本地交付阶段不得修改。
-- `status`：直接保留禅道任务只读获取时的原始 `status`；本地交付阶段不得改成 `done`，用户在网页版手工维护后可由独立迭代同步流程回读。
+- `status`：直接保留禅道任务原始 `status`；代码确认时不得提前改成 `done`，完成禅道工作流后通过迭代同步回读。
 - `completed`：实际完成日期，仅保留 `YYYY-MM-DD`。
 - `customFields.actualStartedAt`：禅道或交付记录中的完整实际开始时间。
 - `customFields.actualFinishedAt`：禅道或交付记录中的完整实际完成时间。
 - `customFields.consumedHours`：完成目标为“远端原消耗 + 远端原剩余”。
 - `customFields.remainingHours`：完成目标为 0。
-- `customFields.deliveryStatus`：本地代码确认后固定使用 `manual-zentao`，表示禅道状态由用户手工维护，本 Skill 不自动写回。
+- `customFields.deliveryStatus`：本地完成但尚未写入禅道时使用 `pending-zentao`；禅道回读同步后允许移除。
 
 ## 项目管理增量区域
 
