@@ -177,39 +177,83 @@ function parseArgs(argv) {
   return options;
 }
 
+const DELIVERY_COMMENT_SECTIONS = [
+  ['涉及模块', false],
+  ['主要调整', false],
+  ['验收口径', false],
+  ['其他影响', true],
+];
+
 /**
- * 提取结构化需求备注的单个分段。
+ * 按固定顺序解析四段交付备注，标题必须独占一行。
  *
- * @param {string} comment 完整需求备注
- * @param {string} heading 当前分段标题
- * @param {string|null} nextHeading 下一分段标题
- * @returns {string} 分段正文
+ * @param {string} comment 完整交付备注
+ * @returns {Map<string, string[]>} 标题到正文行的映射
  */
-function deliveryCommentSection(comment, heading, nextHeading) {
-  const escapedHeading = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const endPattern = nextHeading
-    ? `(?=${nextHeading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[：:])`
-    : '$';
-  const match = String(comment || '').match(new RegExp(`${escapedHeading}[：:]([\\s\\S]*?)${endPattern}`));
-  return match ? match[1].trim() : '';
+function parseDeliveryCommentSections(comment) {
+  const text = String(comment || '').trim();
+  if (/\\(?:r\\n|n|r)/.test(text)) {
+    throw new Error('--delivery-comment 检测到字面量 \\n 或 \\r，必须传入真实换行');
+  }
+
+  const sectionNames = DELIVERY_COMMENT_SECTIONS.map(([heading]) => heading);
+  const headingPattern = new RegExp(`^\\s*(${sectionNames.join('|')})[：:]\\s*$`);
+  const inlineHeadingPattern = new RegExp(`^\\s*(${sectionNames.join('|')})[：:]`);
+  const sections = new Map();
+  let currentHeading = '';
+  let expectedIndex = 0;
+
+  for (const line of text.split(/\r\n|\n|\r/)) {
+    const headingMatch = line.match(headingPattern);
+    if (headingMatch) {
+      const heading = headingMatch[1];
+      const expectedHeading = sectionNames[expectedIndex];
+      if (heading !== expectedHeading) {
+        throw new Error(`--delivery-comment 分段顺序错误，当前位置必须是“${expectedHeading || '无额外分段'}：”`);
+      }
+      currentHeading = heading;
+      sections.set(heading, []);
+      expectedIndex += 1;
+      continue;
+    }
+
+    const inlineHeadingMatch = line.match(inlineHeadingPattern);
+    if (inlineHeadingMatch) {
+      throw new Error(`--delivery-comment 的“${inlineHeadingMatch[1]}：”标题必须独占一行`);
+    }
+    if (!currentHeading) {
+      if (line.trim()) {
+        throw new Error('--delivery-comment 必须从独占一行的“涉及模块：”开始');
+      }
+      continue;
+    }
+    sections.get(currentHeading).push(line);
+  }
+
+  if (expectedIndex !== sectionNames.length) {
+    throw new Error(`--delivery-comment 缺少独占一行的“${sectionNames[expectedIndex]}：”分段`);
+  }
+  return sections;
 }
 
 /**
- * 判断分段中是否存在有意义的条目。
+ * 提取分段内使用项目符号书写的交付条目。
  *
- * @param {string} section 分段正文
- * @param {boolean} allowNoImpact 是否允许明确声明无其他影响
- * @returns {boolean} 是否有效
+ * @param {string[]} lines 分段正文行
+ * @param {string} heading 分段标题
+ * @returns {string[]} 条目正文
  */
-function hasMeaningfulDeliveryCommentItem(section, allowNoImpact = false) {
-  return String(section || '')
-    .split(/\r?\n/)
-    .some((line) => {
-      const item = line.replace(/^\s*[-*]\s*/, '').trim();
-      if (!item) return false;
-      if (allowNoImpact && /^无其他已知影响[。；;！!]?$/.test(item)) return true;
-      return !/^(?:无|无影响|无其他影响|无已知影响|无其他已知影响)[。；;！!]?$/.test(item);
-    });
+function deliveryCommentItems(lines, heading) {
+  const items = [];
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    const match = line.match(/^\s*[-*]\s+(.+?)\s*$/);
+    if (!match) {
+      throw new Error(`--delivery-comment 的“${heading}：”正文必须使用独立项目符号行（- ... 或 * ...）`);
+    }
+    items.push(match[1]);
+  }
+  return items;
 }
 
 /**
@@ -218,19 +262,21 @@ function hasMeaningfulDeliveryCommentItem(section, allowNoImpact = false) {
  * @param {string} comment 需求备注
  */
 function validateDeliveryComment(comment) {
-  const text = String(comment || '').trim();
-  const sections = [
-    ['涉及模块', '主要调整', false],
-    ['主要调整', '验收口径', false],
-    ['验收口径', '其他影响', false],
-    ['其他影响', null, true],
-  ];
+  const sections = parseDeliveryCommentSections(comment);
+  const emptyValues = /^(?:无|无影响|无其他影响|无已知影响|无其他已知影响)[。；;！!]?$/;
 
-  for (const [heading, nextHeading, allowNoImpact] of sections) {
-    const section = deliveryCommentSection(text, heading, nextHeading);
-    if (!hasMeaningfulDeliveryCommentItem(section, allowNoImpact)) {
+  for (const [heading, allowNoImpact] of DELIVERY_COMMENT_SECTIONS) {
+    const items = deliveryCommentItems(sections.get(heading), heading);
+    if (items.length === 0) {
       const suffix = allowNoImpact ? '，经核实没有时可写“无其他已知影响”' : '，不能使用“无”占位';
       throw new Error(`--delivery-comment 的“${heading}：”必须包含具体内容${suffix}`);
+    }
+    for (const item of items) {
+      if (allowNoImpact && /^无其他已知影响[。；;！!]?$/.test(item)) continue;
+      if (emptyValues.test(item)) {
+        const suffix = allowNoImpact ? '，经核实没有时只能写“无其他已知影响”' : '，不能使用“无”占位';
+        throw new Error(`--delivery-comment 的“${heading}：”必须包含具体内容${suffix}`);
+      }
     }
   }
 }

@@ -206,77 +206,6 @@ function cliJson(options, args) {
 }
 
 /**
- * 使用 raw 格式读取单个 Bug，保留认证失败时的结构化错误码。
- *
- * zentao-cli 0.2.x 在 json 格式下可能把认证异常输出为空对象，导致调用方
- * 无法识别 1001/1004。raw 格式会保留 {status, data/error} 信封，适合只读
- * Bug 查询和受控的自动重新登录。
- *
- * @param {object} options 公共选项
- * @param {string} bugId Bug ID
- * @returns {object} Bug 对象
- */
-function rawBug(options, bugId) {
-  const cliArgs = [
-    '--config', options.config,
-    '--machine-readable',
-    `--timeout=${CLI_TIMEOUT_MS}`,
-    '--format=raw',
-    'bug',
-    String(bugId),
-  ];
-  const result = spawn(options.cli, cliArgs, { env: executableEnvironment(options.cli) });
-  const combined = `${result.stdout || ''}\n${result.stderr || ''}`;
-
-  if (result.error) {
-    throw new Error(`无法执行 zentao-cli：${redactSensitiveText(result.error.message)}`);
-  }
-
-  let body;
-  try {
-    body = JSON.parse(result.stdout || '{}');
-  } catch (error) {
-    const cliError = new Error(`zentao-cli 返回的不是有效 JSON：${redactSensitiveText(combined.trim() || error.message)}`);
-    cliError.authCode = findErrorCode(combined);
-    throw cliError;
-  }
-
-  if (result.status !== 0 || body.status === 'fail' || body.error) {
-    const rawDetail = body.error || body.message || String(result.stderr || '').trim() || body;
-    const detail = typeof rawDetail === 'string' ? rawDetail : JSON.stringify(rawDetail);
-    const cliError = new Error(`zentao-cli 调用失败：${redactSensitiveText(detail)}`);
-    cliError.authCode = String(body?.error?.code || findErrorCode(combined) || findErrorCode(detail));
-    throw cliError;
-  }
-
-  const bug = body?.bug || body?.data || (String(body?.id || '') === String(bugId) ? body : null);
-  if (!bug || String(bug.id || '') !== String(bugId)) {
-    throw new Error(`未找到禅道 Bug #${bugId}`);
-  }
-  return bug;
-}
-
-/**
- * 获取单个禅道 Bug；认证失效时通过钥匙串恢复一次登录后重试。
- *
- * @param {object} options 公共选项
- * @param {string} bugId Bug ID
- * @returns {object} Bug 对象
- */
-function getBug(options, bugId) {
-  try {
-    return rawBug(options, bugId);
-  } catch (error) {
-    if (error.authCode !== '1001' && error.authCode !== '1004') {
-      throw error;
-    }
-
-    restoreLoginFromKeychain(options);
-    return rawBug(options, bugId);
-  }
-}
-
-/**
  * 从本地配置中读取当前禅道 Profile。
  *
  * 专用 REST API 需要使用当前 Profile 的服务地址和 Token；这里不输出任何认证信息。
@@ -544,7 +473,6 @@ module.exports = {
   cliJson,
   defaultOptions,
   editableTaskSnapshot,
-  getBug,
   getStory,
   getTask,
   normalizeDateTime,
