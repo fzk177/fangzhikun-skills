@@ -2,6 +2,16 @@
 
 本项目遵循语义化版本管理。每个 Skill 的独立版本记录在 `registry/skills.json`。
 
+## 2026-09-29
+
+### 变更
+
+- `skill-manager` 升级至 1.3.0：新增与现有 Obsidian 库的受控 Markdown 同步。源码更新时同步目标 Skill 文档及变更记录，提交、推送和部署前核对一致性；双方改动、删除或软链接会阻断同步，保护人工内容。
+
+### 迁移
+
+- 本机 `runtime.json` 可用 `skillManager.obsidianDocsRoot` 指向 `03.AI/20.skills管理/10.文档`，未设置时复用 `paths.vault`；首次运行 `tools/skilldocs sync --apply` 建立文档副本和本机同步记录。当前会话仍使用旧版 Skill，部署后需在新会话验证。
+
 ## 2026-09-22
 
 ### 变更

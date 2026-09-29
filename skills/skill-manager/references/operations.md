@@ -41,6 +41,33 @@ git diff --check -- <本次修改文件>
 
 校验失败必须报告具体文件和原因。不得通过删除规则、放宽敏感信息正则或跳过目标文件来制造通过结果，除非用户明确要求调整规则且已经说明安全影响。
 
+## Obsidian 文档同步
+
+同步工具优先读取本机 `runtime.json` 中的 `skillManager.obsidianDocsRoot`，该字段指向现有 Obsidian 库的 `03.AI/20.skills管理/10.文档`；未设置时才使用 `paths.vault` 拼接该相对路径。不向公开仓库写入个人绝对路径。同步记录位于 `~/.local/state/fangzhikun-skills/obsidian-docs.json`，不进入 Git。总览页位于文档目录外，不参与同步。
+
+首次接入先预览全部 Markdown，再执行安全复制和一致性核对：
+
+```bash
+./tools/skilldocs sync
+./tools/skilldocs sync --apply
+./tools/skilldocs check
+```
+
+普通源码更新只处理目标 Skill 和根目录 `CHANGELOG.md`：
+
+```bash
+./tools/skilldocs status --skill <skill-name>
+./tools/skilldocs sync --skill <skill-name>
+./tools/skilldocs sync --skill <skill-name> --apply
+./tools/skilldocs check --skill <skill-name>
+```
+
+`status`、不带 `--apply` 的 `sync` 和 `check` 均只读。同步工具以最近一次一致内容的哈希判断方向；两侧内容不同且都发生变化、文件删除、软链接或登记范围变化时停止，不自动覆盖或删除。仅在 Obsidian 新建的文档需要先审阅内容，再以 `--import-new <仓库相对路径>` 显式允许导入；新文件不自动暂存或纳入 Git。同步时重新核对写入前内容，并在写入后核对哈希。
+
+如果本次还修改了 `README.md` 或 `config/examples/` 下的 Markdown，使用全量 `sync` 预览和应用；全量预览存在无关文档改动或冲突时，不代替用户决定归属，应先处理后再同步。新生成文档不自动暂存或纳入 Git。
+
+源码校验通过后完成 Obsidian 同步，且对应文档一致，才能进入 Git 提交、推送或部署预览。仅执行这些后续动作时运行只读 `check --skill <skill-name>`。回滚只改变安装版本，不同步旧文档到 Obsidian。
+
 ## 安装目录漂移
 
 先创建系统临时目录，再导出安装内容：
@@ -101,6 +128,7 @@ skill_import_root="$(mktemp -d)"
 - 不纳入的已有修改。
 - 版本和变更记录。
 - 静态校验结果。
+- Obsidian 对应文档的一致性核对结果。
 - 中文提交备注。
 
 提交备注格式：
@@ -132,6 +160,7 @@ git rev-parse '@{upstream}'
 - 安装目录没有人工漂移。
 - 目标版本与预览一致。
 - 用户已经明确确认部署。
+- Obsidian 对应文档与源码一致。
 
 执行：
 
