@@ -1,7 +1,7 @@
 ---
 name: weaver
 description: 显式调用 $weaver 时，复用泛微 E10 官方智能搭建能力，在 dev/pre 共用测试环境和独立 prod 环境查询数据、维护应用与审批流；也可由 $zentao-debug 或 $vesselhub-problem-analyze 按需进入泛微审批流只读排查。只读直接执行，显式调用时每个非只读业务请求必须逐条批准，登录和会话续期使用本机钥匙串自动完成。
-version: 1.1.0
+version: 1.1.1
 ---
 
 # 泛微环境与审批操作
