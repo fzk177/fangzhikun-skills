@@ -1,7 +1,7 @@
 ---
 name: skill-manager
 description: 仅在用户显式调用 $skill-manager 时，以自然语言管理 fangzhikun-skills 中已登记的自研 Skill，执行状态检查、源码更新、版本与变更记录维护、静态校验，以及当前或已提交祖先源码基线的已审阅漂移接管，并在逐项确认后完成 Git 提交、GitHub 推送、本机部署或回滚。
-version: 1.3.0
+version: 1.3.1
 ---
 
 # Skill 管理
@@ -76,16 +76,17 @@ Obsidian 中的 `03.AI/20.skills管理/10.文档` 是自研 Skill Markdown 的�
 3. 使用 `tools/skilldocs status --skill <目标>` 查看仓库和 Obsidian 文档差异；安全的单侧改动先经预览同步，冲突时停止。完整读取目标 `SKILL.md`，只按目标需要读取其直接引用文件和脚本，不加载无关 Skill。
 4. 从用户描述形成明确更新目标。目标或 Skill 名称无法唯一确定时询问，不猜测。
 5. 只修改目标源码及必须维护的注册表、变更记录；通过 `tools/skilldocs` 同步对应 Obsidian 文档。禁止直接编辑 `~/.codex/skills` 中的运行版本。
-6. 按语义化版本调整目标 `SKILL.md` 和 `registry/skills.json`：
-   - `PATCH`：修正文案、兼容或边界，不改变主要流程。
-   - `MINOR`：新增向后兼容能力。
-   - `MAJOR`：改变主要流程、配置格式、输出契约或权限边界。
+6. 使用 `MAJOR.MINOR.PATCH` 三段版本号，同步调整目标 `SKILL.md` 和 `registry/skills.json`；所有受管理 Skill（包括自身）统一遵守以下升级约束：
+   - 一般改动只将末位 `PATCH` 加 1，首位和中间位保持不变，例如 `1.3.0 → 1.3.1`。
+   - 较大改动（如新增重要能力、明显调整主要流程、配置格式、输出契约或权限边界）将中间位 `MINOR` 加 1，末位归零，首位保持不变，例如 `1.3.1 → 1.4.0`；在预览中说明判断依据及兼容影响。
+   - 首位 `MAJOR` 只有用户明确要求升级首位或明确指定更高首位的目标版本时才允许增加；一般“更新”“升级”或“完整发布”不构成该授权，不得仅因不兼容改动自动升级首位。获明确授权后，中间位和末位归零，或采用用户明确指定的完整版本号。
+   - 不兼容改动仍须在变更记录中说明影响和迁移要求，不能因首位保持不变而省略。
 7. 在根目录 `CHANGELOG.md` 记录日期、目标 Skill、变化原因、影响和迁移要求。
 8. 执行目标 Skill 校验，再执行全部校验。失败时继续修复当前范围，不提交、不推送、不部署。
 9. 使用 `tools/skilldocs sync --skill <目标> --apply` 将已校验的目标文档和变更记录同步到 Obsidian，再执行 `tools/skilldocs check --skill <目标>`；本次另有 README 或配置示例变化时按 [操作契约](references/operations.md) 单独同步。同步失败时停止后续提交、推送和部署，不回退已有人工修改。
 10. 展示源码差异、Obsidian 同步结果、版本变化、依赖影响、校验结果和仍未执行的动作。
 
-新增 Skill 时还必须登记 `name`、版本、所有权、源码路径、部署目标和依赖，并在 Obsidian `03.AI/20.skills管理/00.总览.md` 增加入口；确保 `agents/openai.yaml` 默认禁止隐式调用，是否允许隐式调用只能根据用户明确要求决定。
+新增 Skill 时还必须登记 `name`、版本、所有权、源码路径、部署目标和依赖，并在 Obsidian `03.AI/20.skills管理/00.Skills总览.md` 增加入口；确保 `agents/openai.yaml` 默认禁止隐式调用，是否允许隐式调用只能根据用户明确要求决定。
 
 ## 确认边界
 
