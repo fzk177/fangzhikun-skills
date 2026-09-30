@@ -2,8 +2,9 @@
 
 const { pathToFileURL } = require('node:url');
 const { syncBuiltinESMExports } = require('node:module');
-const { fs, path, crypto, digest, emit, readJson, writeJson, privateDirectory, resolveEnvironment, cliFingerprint, wrapperFingerprint, jobDirectory, loadPolicy, redact } = require('./common.js');
+const { fs, path, crypto, digest, losslessJson, emit, readJson, writeJson, privateDirectory, resolveEnvironment, cliFingerprint, wrapperFingerprint, jobDirectory, loadPolicy, matchesReadOnlyRule, redact } = require('./common.js');
 const { dependencies, ensureSession, checkSession } = require('./authentication.js');
+const { parseReadCommand, runWorkflowRead } = require('./workflow-read.js');
 const nativeFetch = globalThis.fetch.bind(globalThis);
 
 function assertUnchanged(context) {
@@ -14,7 +15,6 @@ function assertUnchanged(context) {
 }
 
 function prepareApproval(context, detail, bodyHash) {
-  if (!context.purpose?.trim() || !context.impact?.trim()) throw new Error('非只读请求尚未发送；请明确操作目的和影响范围后重新准备操作');
   assertUnchanged(context);
   context.sequence += 1;
   const plan = {
@@ -23,7 +23,9 @@ function prepareApproval(context, detail, bodyHash) {
     configDigest: context.environment.configDigest, cliDigest: context.cliDigest, wrapperDigest: context.wrapperDigest,
     policyDigest: context.policy.fingerprint, cliVersion: context.cli.version,
     actor: context.sessionData.userId,
-    command: context.args, purpose: context.purpose, impact: context.impact,
+    command: context.args,
+    purpose: context.purpose?.trim() || '当前命令包含待用户判定的请求：' + context.args.join(' '),
+    impact: context.impact?.trim() || (detail.kind === 'oa-request' ? '接口 ' + detail.path + '；对象与参数见审核单，实际副作用待用户判断' : '本机目标 ' + detail.target + '；写入内容与摘要见审核单'),
     detail, bodyHash,
     createdAt: new Date().toISOString(),
     expiresAt: new Date(Date.now() + context.environment.approvalTimeoutSeconds * 1000).toISOString(),
@@ -146,6 +148,7 @@ function rejectCredentialsInArguments(args) {
 
 async function runControlled(environment, cli, args, purpose, impact) {
   rejectCredentialsInArguments(args);
+  const readCommand = parseReadCommand(args);
   const commandGroup = args[0] === '--json' ? args[1] : args[0];
   if (!['form', 'wf-form', 'workflow', 'app', 'menu', 'page', 'designer', 'role', 'user', 'matrix', 'actionflow', 'interface', 'project', 'icon'].includes(commandGroup)) throw new Error('此入口仅运行官方原生 OA 命令；本机编码、编译和管理动作需按 Skill 规则另行批准');
   const authentication = { loginAttempted: false };
@@ -183,6 +186,11 @@ async function runControlled(environment, cli, args, purpose, impact) {
   const originalRequestRaw = ApiClient.prototype.requestRaw;
   ApiClient.prototype.requestRaw = async function (...parameters) {
     this.retries = 1;
+    if (readCommand) {
+      const response = await globalThis.fetch(...parameters);
+      if (!response.ok) throw new Error('流程查询返回 HTTP ' + response.status);
+      return losslessJson(await response.text());
+    }
     return originalRequestRaw.apply(this, parameters);
   };
   delete process.env.E10_ACCOUNT; delete process.env.E10_PASSWORD; delete process.env.E10_AUTH_PATH;
@@ -191,13 +199,16 @@ async function runControlled(environment, cli, args, purpose, impact) {
     const request = new Request(input, { ...init, redirect: 'manual' });
     const url = new URL(request.url);
     if (url.origin !== environment.baseUrl || url.username || url.password) throw new Error('拒绝访问当前 OA 环境之外的业务地址');
-    const readonly = policy.rules.some(rule => rule.method === request.method && rule.match.test(url.pathname));
     const body = await summarizeBody(request);
+    const matchedRule = policy.rules.find(rule => matchesReadOnlyRule(rule, request.method, url, body.preview));
+    const operationName = url.pathname.split('/').filter(Boolean).at(-1) || '';
+    const queryNamed = Boolean(policy.queryName?.match.test(operationName));
+    const readonly = Boolean(matchedRule) || queryNamed;
+    const allowReason = matchedRule ? 'registered-read-rule' : queryNamed ? 'query-name' : 'user-decision-required';
     const extraHeaders = Object.fromEntries(Array.from(request.headers).filter(([key]) => !/cookie|eteamsid|authorization/i.test(key)));
-    const detail = { kind: 'oa-request', method: request.method, path: url.pathname, query: Array.from(url.searchParams.entries()), headers: extraHeaders, body: body.preview, readonly };
+    const detail = { kind: 'oa-request', method: request.method, path: url.pathname, operationName, query: Array.from(url.searchParams.entries()), headers: extraHeaders, body: body.preview, readonly, allowReason };
     let plan = null;
     if (!readonly) {
-      if (!context.purpose?.trim() || !context.impact?.trim()) emit({ event: 'unclassified_or_write_request', environment: environment.alias, detail, note: '当前请求未发送；先核对操作语义并明确目的与影响' });
       plan = await approval(context, detail, body.bodyHash);
     }
     // 审批等待期间会话可能失效。先只读校验；失效重登后禁止复用不同身份的批准。
@@ -211,6 +222,13 @@ async function runControlled(environment, cli, args, purpose, impact) {
     headers.set('eteamsid', context.sessionData.cookies.ETEAMSID);
     const bytes = Buffer.from(await request.clone().arrayBuffer());
     const frozenInit = { method: request.method, headers, body: ['GET', 'HEAD'].includes(request.method) ? undefined : bytes, redirect: 'manual', signal: AbortSignal.timeout(30000) };
+    const observation = matchedRule?.observe || (queryNamed && !matchedRule && policy.queryName.observe) ? {
+      observationId: crypto.randomUUID(), environment: environment.alias, method: request.method,
+      path: url.pathname, operationName, allowReason, query: detail.query, body: body.preview, bodyHash: body.bodyHash,
+      basis: '用户明确允许查询名称直接放行及指定接口先放行并观察；服务端副作用尚未独立验证', startedAt: new Date().toISOString(),
+    } : null;
+    const observationFile = observation ? path.join(context.directory, observation.observationId + '.observation.json') : null;
+    if (observation) writeJson(observationFile, { ...redact(observation), status: 'sending' });
     let response;
     try {
       if (plan) {
@@ -220,6 +238,7 @@ async function runControlled(environment, cli, args, purpose, impact) {
       }
       response = await nativeFetch(request.url, frozenInit);
     } catch {
+      if (observation) writeJson(observationFile, { ...redact(observation), status: 'connection-failed', note: '连接失败不能判断是否存在服务端副作用' });
       if (plan) writeJson(path.join(context.directory, plan.requestHash + '.result.json'), { requestHash: plan.requestHash, status: 'unknown', note: '请求可能已生效；先只读核对，禁止自动重放' });
       throw new Error(readonly ? '只读请求连接失败' : '写请求结果不明，未自动重试；先只读核对远端状态');
     }
@@ -230,18 +249,44 @@ async function runControlled(environment, cli, args, purpose, impact) {
       if (!preview || preview.code === -1 || preview.code === 401 || preview.errcode === 'SESSION_EXPIRED') expired = !(await checkSession(environment, context.sessionData));
     }
     if (expired) {
+      if (observation) writeJson(observationFile, { ...redact(observation), status: 'authentication-expired', httpStatus: response.status, note: '会话续期前收到认证异常；不能据此判断副作用' });
       if (!readonly) throw new Error('写请求返回认证或跳转响应，未自动重放；需要重新认证并核对远端状态');
       const renewed = await ensureSession(environment, cli, authentication, true);
       if (renewed.userId !== context.sessionData.userId) throw new Error('续期后身份变化，停止当前读取');
       context.sessionData = renewed; session.data = renewed;
       headers.set('eteamsid', renewed.cookies.ETEAMSID);
-      response = await nativeFetch(request.url, { ...frozenInit, headers, signal: AbortSignal.timeout(30000) });
+      try {
+        response = await nativeFetch(request.url, { ...frozenInit, headers, signal: AbortSignal.timeout(30000) });
+      } catch {
+        if (observation) writeJson(observationFile, { ...redact(observation), status: 'renewed-read-failed', note: '会话续期后的读取连接失败；不能据此判断副作用' });
+        throw new Error('续期后的读取连接失败；未继续重试');
+      }
       if (response.status !== 200) throw new Error('续期后的读取仍未成功；未继续重试');
+    }
+    if (observation) {
+      const responseBytes = Buffer.from(await response.clone().arrayBuffer());
+      let observedResponse;
+      try { observedResponse = losslessJson(responseBytes.toString('utf8')); } catch { observedResponse = null; }
+      const identifiers = {};
+      for (const key of ['mapBaseId', 'conditionKey', 'reserveGroupId']) {
+        const value = observedResponse?.data?.[key];
+        if (['string', 'number'].includes(typeof value)) identifiers[key] = String(value);
+      }
+      const result = { ...redact(observation), status: 'response-received', httpStatus: response.status,
+        businessCode: observedResponse?.code, businessStatus: observedResponse?.status,
+        identifiers, responseHash: digest(responseBytes), completedAt: new Date().toISOString(),
+        note: '响应正常不证明无副作用；返回 ID 也不单独证明产生了持久写入' };
+      writeJson(observationFile, result);
+      emit({ event: 'readonly_observation', observationId: observation.observationId, environment: environment.alias,
+        path: url.pathname, operationName, allowReason, httpStatus: response.status, businessCode: result.businessCode, identifiers, observationFile });
     }
     return response;
   };
   blockAlternativeTransports();
   guardLocalWrites(context);
+  if (readCommand) {
+    return runWorkflowRead(readCommand, new ApiClient(session, 1), environment.baseUrl);
+  }
   process.argv = [process.execPath, path.join(cli.root, 'dist', 'index.js'), ...args];
   await import(pathToFileURL(path.join(cli.root, 'dist', 'index.js')).href);
 }

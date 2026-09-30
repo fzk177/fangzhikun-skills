@@ -185,9 +185,38 @@ function jobDirectory(jobId) {
 function loadPolicy() {
   const file = path.join(__dirname, '..', 'references', 'read-only.json');
   const raw = fs.readFileSync(file, 'utf8');
-  const rules = JSON.parse(raw).rules;
+  const settings = JSON.parse(raw);
+  const rules = settings.rules;
   if (!Array.isArray(rules)) throw new Error('只读策略格式不合法');
-  return { fingerprint: digest(raw), rules: rules.map(rule => ({ ...rule, match: new RegExp(rule.path) })) };
+  const queryName = settings.queryName;
+  return { fingerprint: digest(raw), rules: rules.map(rule => ({ ...rule, match: new RegExp(rule.path) })),
+    queryName: queryName ? { ...queryName, match: new RegExp(queryName.operationPattern, queryName.caseInsensitive ? 'i' : '') } : null };
 }
 
-module.exports = { fs, path, crypto, configPath, stateRoot, digest, losslessJson, remember, redact, emit, readJson, privateDirectory, writeJson, resolveEnvironment, locateCli, cliFingerprint, wrapperFingerprint, jobDirectory, loadPolicy };
+function matchesReadOnlyRule(rule, method, url, body) {
+  if (rule.method !== method || !rule.match.test(url.pathname)) return false;
+  if (rule.query) {
+    const entries = Array.from(url.searchParams.entries());
+    if (entries.length !== Object.keys(rule.query).length) return false;
+    for (const [key, pattern] of Object.entries(rule.query)) {
+      const values = url.searchParams.getAll(key);
+      if (values.length !== 1 || !new RegExp(pattern).test(values[0])) return false;
+    }
+  }
+  if (rule.bodyEquals || rule.bodyPatterns || rule.bodyOneOf || rule.bodyKeys) {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
+    if (rule.bodyKeys && Object.keys(body).some(key => !rule.bodyKeys.includes(key))) return false;
+    for (const [key, value] of Object.entries(rule.bodyEquals || {})) {
+      if (body[key] !== value) return false;
+    }
+    for (const [key, pattern] of Object.entries(rule.bodyPatterns || {})) {
+      if (!['string', 'number'].includes(typeof body[key]) || !new RegExp(pattern).test(String(body[key]))) return false;
+    }
+    for (const [key, values] of Object.entries(rule.bodyOneOf || {})) {
+      if (!values.includes(body[key])) return false;
+    }
+  }
+  return true;
+}
+
+module.exports = { fs, path, crypto, configPath, stateRoot, digest, losslessJson, remember, redact, emit, readJson, privateDirectory, writeJson, resolveEnvironment, locateCli, cliFingerprint, wrapperFingerprint, jobDirectory, loadPolicy, matchesReadOnlyRule };

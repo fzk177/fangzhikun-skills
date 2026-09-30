@@ -49,7 +49,7 @@ async function main() {
   if (Number(process.versions.node.split('.')[0]) < 18) throw new Error('需要 Node.js 18 或以上');
   const { command, options, args } = parse(process.argv.slice(2));
   if (!command || ['help', '--help', '-h'].includes(command)) {
-    emit({ commands: ['info', 'auth --env dev|pre|prod', 'run --env dev|pre|prod [--purpose 内容 --impact 范围] -- 官方CLI参数', 'pending --job 任务ID', 'approve --job 任务ID --hash 完整哈希 --decision allow|deny'], credentialEnrollment: '由用户在本机运行 python3 scripts/enroll.py --env pre|prod' });
+    emit({ commands: ['info', 'auth --env dev|pre|prod', 'run --env dev|pre|prod [--purpose 内容 --impact 范围] -- 官方CLI参数或受控查询扩展', 'pending --job 任务ID', 'approve --job 任务ID --hash 完整哈希 --decision allow|deny'], queryExtensions: ['workflow operators <workflowId> [nodeId]', 'workflow conditions-read <workflowId> [--link-id <linkId>]'], credentialEnrollment: '由用户在本机运行 python3 scripts/enroll.py --env pre|prod' });
     return;
   }
   if (command === 'pending') return pending(options.job);

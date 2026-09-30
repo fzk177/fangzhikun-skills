@@ -1,13 +1,79 @@
 {
-  "schemaVersion": 1,
-  "evidence": "官方 weaver-e10-builder 1.1.9 源码读取调用；补充规则的源码位置与用户只读确认见 request-policy.md；未知接口不匹配。",
+  "schemaVersion": 2,
+  "evidence": "用户明确授权按查询名称自动放行，其他请求逐项等待用户判断；保留官方读取规则与观察名单，具体依据见 request-policy.md。名称放行不代表已验证服务端无副作用。",
+  "queryName": {
+    "operationPattern": "^(?:get|query|search|list|read|find|fetch)",
+    "caseInsensitive": true,
+    "observe": true
+  },
   "rules": [
     { "method": "POST", "path": "^/api/bs/workflow/pathdef/baseSet/getBaseInfoList$" },
     { "method": "POST", "path": "^/api/bs/ebuilder/flow/approval/getApprovalListDatasByAppId$" },
     { "method": "GET", "path": "^/api/bs/workflow/pathdef/nodeBase/(getNodeAndLinkId|getNodeEditTable|getNodeSetForm|getNodeMenuForm|getNodeVoteConfigForm)$" },
     { "method": "GET", "path": "^/api/bs/workflow/pathdef/nodeLink/getWfpNodeLinkTable$" },
     { "method": "POST", "path": "^/api/bs/workflow/pathdef/chart/getXml$" },
-    { "method": "POST", "path": "^/api/bs/workflow/pathdef/nodeOperator/getLayoutConfigInfo$" },
+    {
+      "method": "POST",
+      "path": "^/api/bs/workflow/pathdef/nodeOperator/getLayoutConfigInfo$",
+      "observe": true,
+      "query": {},
+      "bodyKeys": ["groupId", "workflowId", "nodeId", "sourceType", "isOperatorRuleAuth"],
+      "bodyEquals": { "isOperatorRuleAuth": true },
+      "bodyPatterns": {
+        "workflowId": "^[1-9][0-9]*$",
+        "nodeId": "^[1-9][0-9]*$",
+        "sourceType": "^1$",
+        "groupId": "^(?:|[1-9][0-9]*)$"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "^/api/workflow/pathdef/rule/condition/getConditionSet$",
+      "observe": true,
+      "query": {},
+      "bodyKeys": ["source", "sourceId", "workflowId", "conditionName", "linkName", "conditionKey", "needFormfield", "readOnly", "templateTokenId"],
+      "bodyEquals": { "source": 2, "needFormfield": true },
+      "bodyOneOf": { "readOnly": [true, false] },
+      "bodyPatterns": {
+        "workflowId": "^[1-9][0-9]*$",
+        "sourceId": "^[1-9][0-9]*$"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "^/api/bs/workflow/pathdef/nodeOperator/getOperatorGroupList$",
+      "query": {
+        "paramGroupId": "^[1-9][0-9]*$",
+        "sourceType": "^1$",
+        "nodeId": "^[1-9][0-9]*$",
+        "refWorkflowId": "^$"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "^/api/workflow/pathdef/rule/condition/getConditionList$",
+      "query": {},
+      "bodyKeys": ["source", "sourceId", "workflowId", "conditionName", "linkName", "needFormfield", "readOnly", "addRight", "hasQuote", "templateTokenId", "exitConditionMapBrowserInfo", "relation", "haveData", "mapBaseId", "conditionKey", "viewRight", "deleteRight", "editRight", "conditionMapBrowserBean", "current", "pageSize"],
+      "bodyEquals": {
+        "source": 2,
+        "needFormfield": true,
+        "viewRight": true
+      },
+      "bodyOneOf": {
+        "readOnly": [true, false],
+        "addRight": [true, false],
+        "editRight": [true, false],
+        "deleteRight": [true, false]
+      },
+      "bodyPatterns": {
+        "workflowId": "^[1-9][0-9]*$",
+        "sourceId": "^[1-9][0-9]*$",
+        "conditionKey": "^[1-9][0-9]*$",
+        "mapBaseId": "^[1-9][0-9]*$",
+        "current": "^[1-9][0-9]*$",
+        "pageSize": "^(?:[1-9]|[1-9][0-9]|100)$"
+      }
+    },
     { "method": "GET", "path": "^/api/bs/workflow/pathdef/nodeLayout/getDisplayLayoutForm$" },
     { "method": "POST", "path": "^/api/bs/workflow/pathdef/addaction/getAddActionDataList$" },
     { "method": "GET", "path": "^/api/bs/ebuilder/app/(permit/entrance|listWithFolder|info)$" },
