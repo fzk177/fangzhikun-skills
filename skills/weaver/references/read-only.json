@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "evidence": "官方 weaver-e10-builder 1.1.9 dist/commands 中明确读取现有资源的调用；未知接口不匹配。",
+  "rules": [
+    { "method": "POST", "path": "^/api/bs/workflow/pathdef/baseSet/getBaseInfoList$" },
+    { "method": "POST", "path": "^/api/bs/ebuilder/flow/approval/getApprovalListDatasByAppId$" },
+    { "method": "GET", "path": "^/api/bs/workflow/pathdef/nodeBase/(getNodeAndLinkId|getNodeEditTable|getNodeSetForm|getNodeMenuForm|getNodeVoteConfigForm)$" },
+    { "method": "GET", "path": "^/api/bs/workflow/pathdef/nodeLink/getWfpNodeLinkTable$" },
+    { "method": "POST", "path": "^/api/bs/workflow/pathdef/chart/getXml$" },
+    { "method": "POST", "path": "^/api/bs/workflow/pathdef/nodeOperator/getLayoutConfigInfo$" },
+    { "method": "GET", "path": "^/api/bs/workflow/pathdef/nodeLayout/getDisplayLayoutForm$" },
+    { "method": "POST", "path": "^/api/bs/workflow/pathdef/addaction/getAddActionDataList$" },
+    { "method": "GET", "path": "^/api/bs/ebuilder/app/(permit/entrance|listWithFolder|info)$" },
+    { "method": "GET", "path": "^/api/bs/auth/role/tree$" },
+    { "method": "GET", "path": "^/api/hrm/common/getOrgTree$" },
+    { "method": "POST", "path": "^/api/hrm/common/getEmployeeByKeyWords$" },
+    { "method": "GET", "path": "^/api/bs/hrm/matrix2/config$" },
+    { "method": "GET", "path": "^/api/ebuilder/form/obj/getInfo/[A-Za-z0-9_-]+$" },
+    { "method": "GET", "path": "^/api/bs/ebuilder/form/obj/(getInfoById|getList)/[A-Za-z0-9_-]+$" },
+    { "method": "POST", "path": "^/api/ebuilder/form/dataset/v1/getFields$" },
+    { "method": "POST", "path": "^/api/ebuilder/form/dataset/v2/getAllData$" },
+    { "method": "POST", "path": "^/api/(ebuilder/form|workflow/core/form)/builder/getFormLayout$" },
+    { "method": "POST", "path": "^/api/(ebuilder/form/form|workflow/core/form)/field/manage/getFormField$" },
+    { "method": "POST", "path": "^/api/(ebuilder/form|workflow/core/form)/field/manage/getFieldGroupPage$" },
+    { "method": "POST", "path": "^/api/(ebuilder/form|workflow/core/form)/view/relate/getConfig$" },
+    { "method": "POST", "path": "^/api/form/datasources/queryDataSourcesByTemplateValueKey$" }
+  ]
+}

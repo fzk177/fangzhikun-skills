@@ -128,8 +128,21 @@ readonly BUG_SUMMARY_PATH="$OUTPUT_DIRECTORY/bug-$BUG_ID-summary.json"
 readonly BUG_ACTIONS_PATH="$OUTPUT_DIRECTORY/bug-$BUG_ID-actions.jsonl"
 printf '%s\n' "$bug_json" > "$BUG_JSON_PATH"
 
+# zentao-cli 0.2.x 的 raw 输出为 {status, data}，旧版本输出为
+# {bug, actions}。后续摘要和附件处理统一使用兼容后的结构，同时原始
+# 响应仍完整保存在 bug-<id>.json 中。
+normalized_bug_json="$(printf '%s' "$bug_json" | jq '
+    if (.bug | type) == "object" then
+        .
+    elif .status == "success" and (.data | type) == "object" then
+        {bug: .data, actions: (.actions // [])}
+    else
+        .
+    end
+')"
+
 # 摘要保留完整 Bug 字段，但不携带通常较长的操作历史，供模型优先读取。
-printf '%s' "$bug_json" | jq '{
+printf '%s' "$normalized_bug_json" | jq '{
     bug: (.bug // {}),
     actionCount: ((.actions // []) | length),
     historyChangeCount: ([.actions[]?.history[]?] | length),
@@ -137,7 +150,7 @@ printf '%s' "$bug_json" | jq '{
 }' > "$BUG_SUMMARY_PATH"
 
 # 操作历史使用 JSON Lines 存储，便于按关键词或行号筛选，避免整份载入上下文。
-printf '%s' "$bug_json" | jq -c '(.actions // [])[] | {
+printf '%s' "$normalized_bug_json" | jq -c '(.actions // [])[] | {
     id,
     objectType,
     objectID,
@@ -193,10 +206,10 @@ while IFS=$'\t' read -r file_id title extension web_path; do
         --output "$OUTPUT_DIRECTORY/attachments/$file_name" "$download_url"; then
         echo "附件下载失败，fileID=$file_id" >&2
     fi
-done < <(printf '%s' "$bug_json" | jq -r '(.bug.files // {}) | to_entries[] | [(.value.id // .key), (.value.title // .value.name // "attachment"), (.value.extension // ""), (.value.webPath // "")] | @tsv')
+done < <(printf '%s' "$normalized_bug_json" | jq -r '(.bug.files // {}) | to_entries[] | [(.value.id // .key), (.value.title // .value.name // "attachment"), (.value.extension // ""), (.value.webPath // "")] | @tsv')
 
 # 正文内嵌图片不一定出现在 files 中，记录 ID 供分析结果说明，避免把登录页误当成图片。
-inline_file_ids="$(printf '%s' "$bug_json" | jq -r '.bug.steps // ""' | grep -oE 'fileID=[0-9]+' | cut -d= -f2 | sort -u || true)"
+inline_file_ids="$(printf '%s' "$normalized_bug_json" | jq -r '.bug.steps // ""' | grep -oE 'fileID=[0-9]+' | cut -d= -f2 | sort -u || true)"
 
 if [ -n "$inline_file_ids" ]; then
     printf '%s\n' "$inline_file_ids" | while IFS= read -r inline_file_id; do

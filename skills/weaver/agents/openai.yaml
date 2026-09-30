@@ -1,0 +1,7 @@
+interface:
+  display_name: "泛微环境与审批操作"
+  short_description: "隔离测试和生产环境，自动认证，只读放行，写入逐条审核"
+  default_prompt: "使用 $weaver 在明确指定的环境读取泛微数据；显式操作任务的每个非只读操作先说明内容、目的和影响范围，获得逐条批准后执行。由 $zentao-debug 或 $vesselhub-problem-analyze 进入时始终只读，遇到非只读或未核实接口时拒绝请求并报告限制。"
+
+policy:
+  allow_implicit_invocation: false

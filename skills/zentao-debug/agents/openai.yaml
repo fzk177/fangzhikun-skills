@@ -1,7 +1,7 @@
 interface:
   display_name: "ZenTao Bug 调试"
   short_description: "只读分析禅道 Bug，并受控修复和提交代码"
-  default_prompt: "使用 $zentao-debug 只读获取指定 Bug，结合当前前后端代码分析根因；必要时调用只读日志和数据库查询补充证据。经确认可修复和提交代码，但不得修改禅道 Bug 状态或字段。"
+  default_prompt: "使用 $zentao-debug 只读获取指定 Bug，结合当前前后端代码分析根因；必要时调用只读日志和数据库查询，涉及泛微审批流时按需调用 $weaver 只读查询补充证据。经确认可修复和提交代码，但不得修改禅道 Bug 状态或字段，泛微排查始终只读。"
 
 policy:
   allow_implicit_invocation: false
