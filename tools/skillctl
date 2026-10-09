@@ -414,6 +414,10 @@ def command_validate(args: argparse.Namespace, registry: dict) -> int:
     """执行注册表和选定 Skill 的静态校验。"""
 
     errors = validate_registry(registry)
+    try:
+        ast.parse(Path(__file__).read_text(encoding="utf-8"), filename="tools/skillctl")
+    except SyntaxError as error:
+        errors.append(f"tools/skillctl: Python 语法错误：{error}")
     names = select_names(args, registry)
     for skill_name in names:
         errors.extend(validate_skill(skill_name, registry["skills"][skill_name]))
@@ -647,6 +651,159 @@ def command_import_local(args: argparse.Namespace, registry: dict) -> int:
         raise RuntimeError(f"目标已存在，拒绝覆盖：{destination}")
     shutil.copytree(target_directory, destination, symlinks=True)
     print(f"已导出 {args.skill} 当前安装内容到 {destination}；请人工比较后再修改源码")
+    return 0
+
+
+def reviewed_release_plan(args: argparse.Namespace, registry: dict) -> dict:
+    """绑定已审阅安装副本、公开源码及私有资料保留位置，默认仅预览。"""
+
+    metadata = registry["skills"].get(args.skill)
+    if not metadata or metadata.get("ownership") != "first-party":
+        raise RuntimeError("deploy-reviewed 只支持已登记的自研 Skill")
+    source = source_path(metadata)
+    target = install_root(metadata["target"]) / args.skill
+    reviewed = Path(args.reviewed_directory).expanduser().absolute()
+    archive = Path(args.local_archive).expanduser().absolute()
+    for directory in (source, target, reviewed, archive):
+        for component in (directory, *directory.parents):
+            if component.is_symlink():
+                raise RuntimeError("受控替换路径不得含软链接")
+        if directory.exists() and any(path.is_symlink() for path in directory.rglob("*")):
+            raise RuntimeError("受控替换目录不得含软链接")
+    for directory in (reviewed, archive):
+        for forbidden in (REPOSITORY_ROOT.resolve(), install_root(metadata["target"]).resolve()):
+            if directory.resolve().is_relative_to(forbidden):
+                raise RuntimeError("导出副本和私有资料目录不得位于源码仓库或安装根目录中")
+    if archive.resolve().is_relative_to(reviewed.resolve()) or reviewed.resolve().is_relative_to(archive.resolve()):
+        raise RuntimeError("导出副本与私有资料目录必须互不包含")
+    previous = read_state(args.skill)
+    current = manifest(target)
+    if not previous.get("manifest") or current == previous["manifest"]:
+        raise RuntimeError("deploy-reviewed 仅处理已有部署记录的人工漂移；其他场景使用普通 deploy")
+    if not reviewed.is_dir() or manifest(reviewed) != current:
+        raise RuntimeError("已审阅导出副本与当前安装内容不一致")
+    errors = validate_skill(args.skill, metadata)
+    if errors:
+        raise RuntimeError("公开源码校验失败：\n" + "\n".join(errors))
+    preserved = []
+    names = args.private_file or []
+    if not names or len(names) != len(set(names)):
+        raise RuntimeError("必须显式列出互不重复的私有资料相对路径")
+    for name in sorted(names):
+        relative = Path(name)
+        if relative.is_absolute() or ".." in relative.parts or relative.as_posix() != name:
+            raise RuntimeError("私有资料路径必须是规范相对文件路径")
+        source_file = reviewed / relative
+        destination = archive / relative.name
+        if not source_file.is_file():
+            raise RuntimeError(f"导出副本缺少指定私有资料：{name}")
+        if destination.exists() and (not destination.is_file() or sha256_file(destination) != sha256_file(source_file)):
+            raise RuntimeError(f"本机资料目标已有不同内容，禁止覆盖：{relative.name}")
+        preserved.append({"file": name, "destination": str(destination), "sha256": sha256_file(source_file)})
+    if len({item["destination"] for item in preserved}) != len(preserved):
+        raise RuntimeError("私有资料目标文件名发生冲突")
+    source_manifest = manifest(source)
+    plan = {
+        "skill": args.skill,
+        "version": metadata["version"],
+        "repositoryCommit": repository_commit(),
+        "metadata": metadata,
+        "sourceManifest": manifest_digest(source_manifest),
+        "installedManifest": manifest_digest(current),
+        "reviewedManifest": manifest_digest(manifest(reviewed)),
+        "previousState": hashlib.sha256(json.dumps(previous, sort_keys=True).encode()).hexdigest(),
+        "registryHash": sha256_file(REGISTRY_PATH),
+        "toolHash": sha256_file(Path(__file__)),
+        "target": str(target),
+        "reviewedDirectory": str(reviewed),
+        "localArchive": str(archive),
+        "privateFiles": preserved,
+        "changedFiles": sorted(name for name in set(current) | set(source_manifest) if current.get(name) != source_manifest.get(name)),
+    }
+    encoded = json.dumps(plan, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    plan["planHash"] = hashlib.sha256(encoded.encode()).hexdigest()
+    return plan
+
+
+def command_deploy_reviewed(args: argparse.Namespace, registry: dict) -> int:
+    """先保留已确认私有资料与完整旧安装，再原子部署已提交公开源码。"""
+
+    plan = reviewed_release_plan(args, registry)
+    if not args.apply:
+        print(json.dumps(plan, ensure_ascii=False, indent=2))
+        print("当前仅预览；替换需 --apply 和相同的 --plan-hash，且源码、注册表与工具已提交")
+        return 0
+    if not args.plan_hash or args.plan_hash != plan["planHash"]:
+        raise RuntimeError("受控替换计划已变化或未提供计划哈希，禁止执行")
+    metadata = registry["skills"][args.skill]
+    clean = subprocess.run(
+        ["git", "-C", str(REPOSITORY_ROOT), "status", "--porcelain", "--", metadata["source"], "registry/skills.json", "tools/skillctl"],
+        capture_output=True, text=True, check=False,
+    )
+    if clean.returncode or clean.stdout.strip():
+        raise RuntimeError("目标源码、注册表或受控工具仍有未提交修改，禁止执行")
+    target = Path(plan["target"])
+    source = source_path(metadata)
+    archive = Path(plan["localArchive"])
+    archive.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(archive, 0o700)
+    for item in plan["privateFiles"]:
+        destination = Path(item["destination"])
+        if destination.exists():
+            if sha256_file(destination) != item["sha256"]:
+                raise RuntimeError("本机私有资料目标在预览后发生变化，禁止覆盖")
+        else:
+            content = (Path(plan["reviewedDirectory"]) / item["file"]).read_bytes()
+            if hashlib.sha256(content).hexdigest() != item["sha256"]:
+                raise RuntimeError("导出资料在预览后发生变化")
+            with destination.open("xb") as stream:
+                os.chmod(destination, 0o600)
+                stream.write(content)
+        if sha256_file(destination) != item["sha256"]:
+            raise RuntimeError("私有资料保存后的哈希核验失败")
+        os.chmod(destination, 0o600)
+    # 资料保留后重新验证源码、安装、副本与部署状态；不修改普通 deploy 的漂移保护。
+    if reviewed_release_plan(args, registry)["planHash"] != plan["planHash"]:
+        raise RuntimeError("保存私有资料期间发布计划发生变化，已保存资料保留，停止部署")
+    staging = Path(tempfile.mkdtemp(prefix=f".{args.skill}.reviewed.", dir=target.parent))
+    backup = state_root() / "backups" / args.skill / timestamp()
+    moved = False
+    try:
+        shutil.copytree(source, staging, dirs_exist_ok=True)
+        if manifest_digest(manifest(staging)) != plan["sourceManifest"]:
+            raise RuntimeError("暂存安装内容与审阅源码摘要不一致")
+        backup.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(backup.parent, 0o700)
+        if reviewed_release_plan(args, registry)["planHash"] != plan["planHash"]:
+            raise RuntimeError("替换前发布计划发生变化")
+        os.replace(target, backup)
+        moved = True
+        os.chmod(backup, 0o700)
+        os.replace(staging, target)
+        deployed = manifest(target)
+        if manifest_digest(deployed) != plan["sourceManifest"]:
+            raise RuntimeError("部署后的哈希核验失败")
+        write_json_atomic(state_path(args.skill), {
+            "skill": args.skill, "version": metadata["version"],
+            "repositoryCommit": plan["repositoryCommit"],
+            "deployedAt": datetime_module.datetime.now().astimezone().isoformat(),
+            "source": str(source), "target": str(target), "backup": str(backup),
+            "manifest": deployed, "reviewedReleasePlan": plan,
+        })
+    except Exception:
+        if moved and backup.exists():
+            if target.exists():
+                failed = state_root() / "replaced" / args.skill / f"failed-{timestamp()}"
+                failed.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(target, failed)
+            os.replace(backup, target)
+        raise
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
+    print(f"已受控部署 {args.skill} {metadata['version']} -> {target}")
+    print(f"完整旧安装备份：{backup}")
+    print(f"私有资料保存目录：{archive}")
     return 0
 
 
@@ -926,6 +1083,14 @@ def build_parser() -> argparse.ArgumentParser:
     import_parser.add_argument("skill")
     import_parser.add_argument("--destination", required=True)
 
+    reviewed_parser = subparsers.add_parser("deploy-reviewed")
+    reviewed_parser.add_argument("skill")
+    reviewed_parser.add_argument("--reviewed-directory", required=True)
+    reviewed_parser.add_argument("--local-archive", required=True)
+    reviewed_parser.add_argument("--private-file", action="append", required=True)
+    reviewed_parser.add_argument("--apply", action="store_true")
+    reviewed_parser.add_argument("--plan-hash")
+
     accept_drift_parser = subparsers.add_parser("accept-drift")
     accept_drift_parser.add_argument("skill")
     accept_drift_parser.add_argument("--reviewed-directory", required=True)
@@ -958,6 +1123,7 @@ def main() -> int:
         "validate": command_validate,
         "deploy": command_deploy,
         "import-local": command_import_local,
+        "deploy-reviewed": command_deploy_reviewed,
         "accept-drift": command_accept_drift,
         "rollback": command_rollback,
         "doctor": command_doctor,

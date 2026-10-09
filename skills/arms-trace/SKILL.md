@@ -1,7 +1,7 @@
 ---
 name: arms-trace
 description: 仅在显式调用 $arms-trace 时，使用阿里云 ARMS 链路追踪的只读查询定位错误 Span、慢调用和跨服务传播问题，并结合实际证据分析故障原因。
-version: 1.0.0
+version: 1.2.0
 ---
 
 # ARMS 链路排查
@@ -17,6 +17,8 @@ version: 1.0.0
 
 ## 开始排查
 
+先读取本机非秘密应用清单 `~/.config/fangzhikun-skills/arms-trace/applications.md`，复用其中已确认的应用名称和地域；该文件不存在时，参考包内 [清单模板](references/applications.md)，仅从本次用户提供的材料固定范围。清单中的环境、账号、资源组、CLI profile 对应关系和权限若标记为待确认，必须补齐本次查询所需信息后再调用云接口。应用名称中的 `test`、`pre` 或 profile 名称中的 `prod` 不能作为环境或账号证据。
+
 从用户已有材料提取并固定：
 
 1. 环境、阿里云地域，以及该环境对应的 CLI profile 或已登录的 ARMS 控制台。地域和身份不能根据相似名称猜测，不能在不同账号或地域间盲查。
@@ -25,9 +27,22 @@ version: 1.0.0
 
 如果 CLI、profile、地域或权限不可用，说明具体缺项并给出用户可自行完成的配置方向；不要要求用户把 AccessKey Secret、STS Token 或 Cookie 发到对话中。已有 TraceID 时直接读取详情；没有 TraceID 时先找候选链路，再逐条读取详情。
 
+## 维护应用清单
+
+- 用户明确要求维护应用信息时，更新本机 `~/.config/fangzhikun-skills/arms-trace/applications.md`，记录信息来源、核验日期和已确认/待确认状态；只保存非秘密信息，不把真实应用清单、账号 / profile 映射和业务接口写入公开 Skill 源码。目录权限 700、文件权限 600。维护本地清单不需要调用云端写接口。
+- 用户希望维护所有应用时，保留全部已确认名称；若页面总数大于实际可见条数，明确记录缺项，不能猜测未展示名称，也不能声称清单已完整。
+- 已记录的 CLI profile 只表示本机观察到的配置名称。只有用户、管理员或实际查询证据确认其账号和环境对应关系后，才能将其用于相应应用；不自动选用本机默认 profile。
+- 维护全部应用不等于每次查询全部应用。日常按本次问题选择服务；本次用户明确要求查询全部时，先固定时间、账号、地域及各服务环境，按已确认清单逐服务查询，每服务首次最多 20 条，不自动分页；候选 TraceID 去重后首批最多读取 5 条详情，继续扩展须有本次问题需要。清单未完整时说明覆盖范围。
+- 验证过程中的 TraceID、SpanID、RequestId、账号标识与最小脱敏证据只保存在本机 `~/.config/fangzhikun-skills/arms-trace/trace-validation.md`，不进入公开源码，不记录 Header Token 或原始业务报文。静态部署只替换通用 Skill 文件，不覆盖本机清单和验证资料。
+- 更换账号、地域、profile 或恢复超过 5 小时的会话时，重新核对本次查询所需映射与权限，不能直接沿用旧的验证结论。
+
 ## 查询入口
 
 优先使用本机已有的 `aliyun` CLI 和 `jq`。每次调用必须显式传入 `--profile`、`--region` 和 API 的 `--RegionId`，其中两个地域值一致。下例中的尖括号由已确认的非秘密值替换；不要执行仍含占位符的命令。CLI 输出先经 `jq` 收窄为必要字段，避免把完整标签、事件和请求内容送入对话。执行前在当前 shell 启用 `set -o pipefail` 并核对命令退出码；不能把 CLI 失败后的空输出解释为无链路。
+
+- CLI 本地报 `not a valid api`、`unchecked version` 时，不视为云端授权失败。查阅 [CLI 兼容性与参数验证规则](references/trace-validation.md)，按已核实的版本和官方地域接入点调整；禁止自动安装插件、升级 CLI 或扩大允许调用的接口。
+- CLI 的标准错误可能包含完整授权诊断或签名相关信息，执行时应在内存中捕获并收窄，只展示必要的错误类型、错误码、RequestId、AuthAction 和 NoPermissionType；不批量回显响应头或 EncodedDiagnosticMessage，不输出任何凭据。
+- 网页可访问或拥有名称含 ReadOnly 的策略，不能证明当前 CLI 身份具有 `xtrace:SearchTrace`。先按官方策略内容核对权限点；若对应策略看似已有但仍被拒绝，核对本次实际 RAM 用户 / 角色与账号级授权范围，而不是重复要求 FullAccess。必要时仅提取用于管理员核对的非秘密账号 ID 与鉴权用户标识。通用策略差异见 [权限与验证规则](references/trace-validation.md)，本次实际请求证据仅保存到本机验证资料。
 
 有 TraceID：
 
@@ -56,6 +71,15 @@ aliyun xtrace SearchTraces \
 - 当 OpenAPI 返回授权失败、空结果或结构与文档不同，保留请求地域、时间、条件和错误类型；不要改用其他身份或环境重试。空结果只代表当前查询条件未命中，继续核对采样、保留期、采集延迟、时间单位、地域和 TraceID 透传。需要查看异常标签的具体值时，在已登录控制台针对单个 Span 查看并只摘录脱敏后的必要片段。
 
 也可在已登录的 ARMS 控制台使用“调用链分析 / Trace Explorer”查询。固定地域和时间后，以 `traceId` 精确检索；无 TraceID 时组合 `serviceName`、`spanName`、状态、耗时和已知的 `attributes.<键>`。控制台查询框的 `duration` 单位为纳秒，例如 500 毫秒写作 `duration >= 500000000`，不要与 OpenAPI 的毫秒单位混用。控制台页面不能实际读取时，不以“已打开页面”代替查询结果。
+
+## 按 TraceID 验证入参和出参
+
+- 先验证 `GetTrace` 是否成功返回实际 Span，再检查目标 Span 的 `TagEntryList.TagEntry` 和 `LogEventList.LogEvent` 中是否存在已采集的请求 / 响应属性。普通摘要命令会过滤这些字段，不能由摘要里没有参数而认定没有采集。
+- 首次仅提取字段键、是否有值、类型和长度，结合接口类型及实际采集规则确认哪个键代表入参、哪个键代表出参；键名包含 request / response 或 `biz.` 本身不能证明是完整业务报文。只在已确认的单个 Span 和字段范围内提取脱敏后的最小片段。
+- 部分 Java 应用样本中已观察到 `biz.Parameters`、`biz.header`、`biz.response.body`，字段用途与读取限制见 [参数验证规则](references/trace-validation.md)。参数为空对象不证明请求没有 Body；响应正文无法解析为完整 JSON 时，不声称报文完整，也不凭推测补齐或批量展示业务值。
+- 只报告当前已读取页数和 Span 的证据。分别记录链路、入参、出参为已确认可读、当前范围未发现或尚未验证；权限拒绝时三者都不能按空结果处理。
+- `GetTrace` 有标签与事件返回结构，但不保证每条 Trace 具有业务参数。Java 业务参数提取规则可将指定请求或响应参数写入 Span Attributes；具体探针版本、框架支持、采样及规则配置以 [官方文档](https://help.aliyun.com/zh/arms/application-monitoring/user-guide/extract-business-parameters) 为准。不要推断未采集的完整请求体、响应体或方法参数，也不能追溯补回历史请求。
+- 若当前未采集，说明所需的采集证据和由用户 / 运维处理的配置方向；本 Skill 不启用规则、不修改探针或应用、不调用配置接口，也不自动关联查询日志或数据库。
 
 ## 分析链路
 
