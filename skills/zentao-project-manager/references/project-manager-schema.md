@@ -10,8 +10,6 @@
 │   ├── 迭代-86-订单功能第二期/
 │   │   ├── 00.迭代总览.md
 │   │   ├── 01.需求与任务/
-│   │   │   ├── 00.禅道资源/
-│   │   │   │   └── story-501/file-12345.png
 │   │   │   ├── 需求-501-订单批量导入-a1b2c3d4.md
 │   │   │   ├── 开发订单接口-b2c3d4e5.md
 │   │   │   └── 迭代-86-计划完成-d4e5f6a7.md
@@ -42,7 +40,7 @@
 
 迭代项目的固定目录为：`00.迭代总览.md`、`01.需求与任务/`、`02.项目管理/`。同步脚本对已存在的项目保留现有位置，不会在普通同步中自动移动或归档；迁移及归档必须显式执行并校验链接。项目资料正文只在不存在时初始化，后续同步仅更新同步归属属性，不覆盖正文或本地管理属性。
 
-需求、任务及备注中的内嵌位图统一存放在 `01.需求与任务/00.禅道资源/<来源类型-ID>/`。文件名使用稳定的禅道文件 ID，例如 `file-29398.png`；需求笔记和关联任务笔记使用 vault 内 Wiki 图片链接复用同一文件。资源目录不能以 `.` 开头，确保 Obsidian 能建立 Wiki 图片索引。普通同步比较资源二进制内容，不依赖原始文件名，不自动删除已经失效的历史资源。
+需求、任务及备注中的图片不参与同步，脚本不下载远端文件，也不在受管正文中保留图片链接。旧版本已经生成的 `01.需求与任务/00.禅道资源/` 历史目录保持原样，普通同步不更新、不引用且不自动删除。
 
 同步范围始终以 `--execution <ID>` 指定的单个迭代为边界。脚本不读取禅道项目列表，不生成跨迭代项目汇总、项目时间线或待规划池，也不覆盖或删除 vault 中已经存在的旧项目汇总目录。
 
@@ -58,7 +56,8 @@ Project Manager Enhanced 项目文件必须提供两篇笔记的 Wiki-link，并
 - 本地项目管理任务使用 `local-management` 标签。
 - 上线准备、执行和验证任务同时使用 `release-management` 标签。
 - 禅道任务继续使用 `zentao` 标签，三类数据依靠标签明确所有权。
-- 同步时只有带 `zentao` 标签且已从远端消失的文件才报告为遗留文件；本地任务不是遗留文件。
+- 同步时只有带 `zentao` 标签且已从远端消失的文件才进入遗留生命周期；本地任务不是遗留文件。
+- 遗留笔记原路径和正文保持不变，`pm-task` 更新为 `false`，Project Manager 通过独立遗留清单展示，不将其计入活动事项。
 - 每次同步都按语义值比较项目资料笔记的同步归属 Frontmatter 属性；值变化时只更新对应属性。YAML 引号、数组写法或排版变化不作为业务差异。
 - 项目管理记录同步 `type`、`project`、`zentaoExecutionId`、`zentaoExecutionUrl`；上线准备记录同步 `type`、`project`、`projectManagement`、`zentaoExecutionId`、`plannedDate`。
 - `status`、`owner`、`version`、`environment` 及其他未知属性由本地维护，普通拉取同步不得覆盖。
@@ -405,6 +404,77 @@ Project Manager Enhanced 迭代详情顶部操作区按“统计范围｜迭代�
 - 已关闭需求严格按原始 `status = closed` 统计；当前应完成、实际完成和偏差继续复用迭代健康度算法。
 - Bug只展示总数、未关闭、未解决、待验证/关闭、已关闭、未关闭1级和未关闭2级聚合数字，不提供Bug行、ID或详情入口。
 - 总结文件不存在时使用当前需求标题和模块实时生成保守范围说明，并显示“暂无总结”；来源签名变化时显示“需刷新”，精确指标仍现场计算。
+
+## 禅道遗留事项
+
+每个迭代维护独立审计文件：
+
+```text
+<迭代目录>/03.数据支持/zentao-orphaned-items.json
+```
+
+该文件不使用 `pm-task`，不加入项目任务层级，不写回禅道，默认不纳入 Git 追踪。它只保存最小定位和生命周期事实：
+
+```json
+{
+  "schemaVersion": 1,
+  "projectId": "zentao-execution-159",
+  "executionId": "159",
+  "generatedAt": "2026-08-28T10:00:00.000Z",
+  "dataHash": "完整64位摘要",
+  "recordCount": 1,
+  "counts": {
+    "missing_unconfirmed": 0,
+    "moved_to_other_execution": 1,
+    "removed_from_execution": 0,
+    "deleted_remote": 0,
+    "verify_failed": 0
+  },
+  "records": [
+    {
+      "id": "Project Manager稳定事项ID",
+      "sourceType": "task",
+      "zentaoId": "521",
+      "filePath": "04.项目/02.船管系统/迭代目录/01.需求与任务/事项.md",
+      "state": "moved_to_other_execution",
+      "firstMissingAt": "2026-08-28T10:00:00.000Z",
+      "lastCheckedAt": "2026-08-28T10:00:00.000Z",
+      "stateChangedAt": "2026-08-28T10:00:00.000Z",
+      "missingSyncCount": 1,
+      "remoteExecutionIds": ["162"]
+    }
+  ]
+}
+```
+
+同步脚本使用具名枚举维护 `state`，禁止散落字符串判断：
+
+| 状态 | 含义 |
+|---|---|
+| `missing_unconfirmed` | 当前列表未出现，但详情不足以确认原因 |
+| `moved_to_other_execution` | 对象存在且已归属其他迭代 |
+| `removed_from_execution` | 对象存在，但当前没有迭代归属 |
+| `deleted_remote` | 详情明确返回远端删除标记 |
+| `verify_failed` | 只读详情查询失败，禁止推断为删除 |
+
+进入遗留生命周期后只受管更新以下 Frontmatter：
+
+```yaml
+pm-task: false
+customFields:
+  zentaoSyncState: "moved_to_other_execution"
+  zentaoMissingSince: "2026-08-28T10:00:00.000Z"
+  zentaoLastCheckedAt: "2026-08-28T10:00:00.000Z"
+  zentaoStateChangedAt: "2026-08-28T10:00:00.000Z"
+  zentaoMissingCount: 1
+  zentaoRemoteExecutionIds: ["162"]
+```
+
+- 原文件路径、正文、标题、状态、标签及其他本地属性保持不变。
+- 项目 `taskIds`、父事项 `subtaskIds` 和正文关系只包含活动事项，遗留事项不参与统计、工时、Bug、总结、看板、甘特图、洞察和写回。
+- Project Manager 迭代概览读取遗留清单，通过单独的“禅道遗留事项”折叠区展示分类、连续缺失次数、远端迭代和原文件入口。
+- 事项重新出现时，同步脚本按稳定 ID 复用原文件，恢复 `pm-task: true`，重建受管属性和父子关系，并删除清单中的对应记录。
+- 普通同步禁止物理删除或移动遗留文件；历史图片资源清理必须由用户明确发起，并先确认没有任何笔记引用。
 
 ## 迭代完成里程碑 Frontmatter
 

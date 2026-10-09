@@ -23,6 +23,7 @@ const EXECUTION_MANAGEMENT_FOLDER = '02.项目管理';
 const EXECUTION_DATA_SUPPORT_FOLDER = '03.数据支持';
 const EXECUTION_BUG_FACTS_FILE = 'zentao-bug-facts.json';
 const EXECUTION_ITERATION_SUMMARY_FILE = 'zentao-iteration-summary.json';
+const EXECUTION_ORPHANED_ITEMS_FILE = 'zentao-orphaned-items.json';
 const ITERATION_DELIVERY_PLANS_SETTING = 'iterationDeliveryPlans';
 const KEYCHAIN_SERVICE = String(RUNTIME_CONFIG.zentao?.keychainService || 'zentao-cli');
 const DEFAULT_ACCOUNT = String(RUNTIME_CONFIG.zentao?.account || '');
@@ -31,14 +32,53 @@ const DEFAULT_PAGE_SIZE = 200;
 const CLI_TIMEOUT_MS = 60000;
 const CLI_MAX_BUFFER = 64 * 1024 * 1024;
 const SYNC_BLOCK_PATTERN = /<!-- zentao-sync:start -->[\s\S]*?<!-- zentao-sync:end -->/g;
+const ZENTAO_MANAGED_TASK_CUSTOM_FIELDS = new Set([
+  'zentaoSourceType',
+  'zentaoId',
+  'zentaoUrl',
+  'zentaoModule',
+  'zentaoModuleId',
+  'executionId',
+  'storyId',
+  'completedBy',
+  'estimatedHours',
+  'consumedHours',
+  'remainingHours',
+  'actualStartedAt',
+  'actualFinishedAt',
+  'sourceUpdatedAt',
+  'zentaoPushBaseline',
+  'displayEstimatedHours',
+  'displayConsumedHours',
+  'displayRemainingHours',
+  'bugTotal',
+  'bugUnclosed',
+  'bugUnclosedSeverity1',
+  'bugUnclosedSeverity2',
+  'bugUnresolved',
+  'bugResolvedOpen',
+  'bugClosed',
+  'bugSummary',
+  'zentaoSyncState',
+  'zentaoMissingSince',
+  'zentaoLastCheckedAt',
+  'zentaoStateChangedAt',
+  'zentaoMissingCount',
+  'zentaoRemoteExecutionIds',
+]);
 const HOUR_ROUNDING_FACTOR = 100;
 const HOUR_COMPARISON_EPSILON = 1e-9;
 const DEVELOPMENT_TASK_STAGES = new Set(['devel', 'develop', 'development', 'dev']);
 const TEST_TASK_STAGES = new Set(['test', 'testing', 'qa']);
 const REQUIREMENT_MANAGEMENT_TAGS = new Set(['未分配开发', '未分配测试', '未更新工时']);
-const ZENTAO_ASSETS_FOLDER = '00.禅道资源';
-const MAX_ASSET_BYTES = 25 * 1024 * 1024;
-const SAFE_IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp']);
+const ZENTAO_ORPHAN_STATE = Object.freeze({
+  MISSING_UNCONFIRMED: 'missing_unconfirmed',
+  MOVED_TO_OTHER_EXECUTION: 'moved_to_other_execution',
+  REMOVED_FROM_EXECUTION: 'removed_from_execution',
+  DELETED_REMOTE: 'deleted_remote',
+  VERIFY_FAILED: 'verify_failed',
+});
+const ZENTAO_ORPHAN_SOURCE_TYPES = new Set(['story', 'task']);
 const ITERATION_THEME_RULES = (RUNTIME_CONFIG.zentaoProjectManager?.iterationThemeRules || [])
   .map((rule) => ({
     label: String(rule.label || ''),
@@ -56,7 +96,8 @@ function printHelp() {
     '  迭代：需求为顶层事项，关联任务为子任务，未关联需求的任务保持顶层；',
     '        首次同步同时初始化项目管理记录和上线准备记录；后续同步比较并更新',
     '        禅道同步属性，同时维护整体与交付批次迭代总结，保留手工正文和本地',
-    '        管理属性；不生成禅道项目汇总。',
+    '        管理属性；远端不再出现的事项软失效并写入遗留清单，不物理删除；',
+    '        不生成禅道项目汇总。',
     '',
     '选项:',
     '  --vault <目录>              Obsidian vault 根目录，默认当前目录',
@@ -86,6 +127,10 @@ function parseArgs(argv) {
     config: DEFAULT_CONFIG,
     json: false,
     includeArchived: false,
+    profileCache: {
+      cli: null,
+      config: null,
+    },
     projectsFolder: '',
     systemFolder: '',
     vault: process.cwd(),
@@ -243,9 +288,17 @@ function rawCliJson(options, args) {
 }
 
 function getProfileWithoutRelogin(options) {
+  if (options.profileCache?.cli) {
+    return options.profileCache.cli;
+  }
+
   try {
     const body = rawCliJson(options, ['profile']);
-    return (body.profiles || []).find((profile) => profile.current) || {};
+    const profile = (body.profiles || []).find((item) => item.current) || {};
+    if (options.profileCache) {
+      options.profileCache.cli = profile;
+    }
+    return profile;
   } catch (error) {
     return {};
   }
@@ -292,6 +345,12 @@ function restoreLoginFromKeychain(options) {
   if (loginResult.error || loginResult.status !== 0) {
     throw new Error('禅道自动重新登录失败，请检查服务地址、CLI 配置或本机钥匙串凭据');
   }
+
+  // 登录会刷新配置文件中的 Token，清空配置缓存后再执行原请求。
+  if (options.profileCache) {
+    options.profileCache.cli = { account, server };
+    options.profileCache.config = null;
+  }
 }
 
 function readOnlyCliJson(options, args) {
@@ -308,6 +367,10 @@ function readOnlyCliJson(options, args) {
 }
 
 function getCurrentConfigProfile(options) {
+  if (options.profileCache?.config) {
+    return options.profileCache.config;
+  }
+
   let config;
   try {
     config = JSON.parse(fs.readFileSync(options.config, 'utf8'));
@@ -317,10 +380,14 @@ function getCurrentConfigProfile(options) {
 
   const profiles = Array.isArray(config.profiles) ? config.profiles : [];
   const current = getProfileWithoutRelogin(options);
-  return profiles.find((profile) => (
-    String(profile.account || '') === String(current.account || '')
-    && String(profile.server || '').replace(/\/+$/, '') === String(current.server || '').replace(/\/+$/, '')
+  const profile = profiles.find((item) => (
+    String(item.account || '') === String(current.account || '')
+    && String(item.server || '').replace(/\/+$/, '') === String(current.server || '').replace(/\/+$/, '')
   )) || profiles[0] || null;
+  if (options.profileCache) {
+    options.profileCache.config = profile;
+  }
+  return profile;
 }
 
 function rawApiJson(options, apiPath, query = {}) {
@@ -391,86 +458,6 @@ function readOnlyApiJson(options, apiPath, query = {}) {
   }
 }
 
-function rawApiBinary(options, apiPath) {
-  if (!/^files\/\d+$/u.test(String(apiPath))) {
-    throw new Error(`拒绝访问非白名单禅道文件接口：${apiPath}`);
-  }
-
-  const profile = getCurrentConfigProfile(options);
-  if (!profile?.token) {
-    const authError = new Error('zentao-cli 当前配置缺少可用 Token');
-    authError.authCode = '1001';
-    throw authError;
-  }
-
-  const server = String(profile.server || DEFAULT_SERVER).replace(/\/+$/, '');
-  const url = new URL(`${server}/api.php/v1/${apiPath}`);
-  const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'zentao-asset-'));
-  const temporaryFile = path.join(temporaryDirectory, 'content.bin');
-
-  try {
-    // 文件内容写入系统临时目录，Token 继续通过标准输入交给 curl。
-    const result = spawn('curl', [
-      '--silent',
-      '--show-error',
-      '--location',
-      '--max-time',
-      String(Math.ceil(CLI_TIMEOUT_MS / 1000)),
-      '--max-filesize',
-      String(MAX_ASSET_BYTES),
-      '--request',
-      'GET',
-      '--header',
-      '@-',
-      '--output',
-      temporaryFile,
-      '--write-out',
-      '%{http_code}',
-      url.toString(),
-    ], {
-      input: `Token: ${profile.token}\n`,
-    });
-
-    if (result.error || result.status !== 0) {
-      throw new Error(`禅道文件下载失败：${redactSensitiveText(result.stderr || result.error?.message || '')}`);
-    }
-
-    const statusCode = Number(String(result.stdout || '').trim());
-    if (statusCode === 401) {
-      const authError = new Error('禅道 REST API Token 已失效');
-      authError.authCode = '1004';
-      throw authError;
-    }
-    if (statusCode < 200 || statusCode >= 300) {
-      throw new Error(`禅道文件下载失败（HTTP ${statusCode}）`);
-    }
-
-    const content = fs.readFileSync(temporaryFile);
-    if (content.length === 0) {
-      throw new Error('禅道文件下载结果为空');
-    }
-    if (content.length > MAX_ASSET_BYTES) {
-      throw new Error(`禅道文件超过 ${Math.round(MAX_ASSET_BYTES / 1024 / 1024)}MB 限制`);
-    }
-    return content;
-  } finally {
-    fs.rmSync(temporaryDirectory, { recursive: true, force: true });
-  }
-}
-
-function readOnlyApiBinary(options, apiPath) {
-  try {
-    return rawApiBinary(options, apiPath);
-  } catch (error) {
-    if (error.authCode !== '1001' && error.authCode !== '1004') {
-      throw error;
-    }
-
-    restoreLoginFromKeychain(options);
-    return rawApiBinary(options, apiPath);
-  }
-}
-
 function getCliList(options, moduleName, params = []) {
   const allowedModules = new Set(['bug', 'execution', 'story', 'task', 'user']);
   if (!allowedModules.has(moduleName)) {
@@ -536,6 +523,31 @@ function loadBugs(options, executionId) {
     '--browseType=all',
     '--pick=id,story,severity,status,assignedTo,resolvedBy,deleted',
   ]);
+}
+
+/**
+ * 读取单个禅道需求或任务详情，仅用于确认远端遗留原因。
+ *
+ * 详情正文属于不可信数据，本方法只返回对象，由调用方摘取 ID、删除标记和迭代归属。
+ */
+function loadZenTaoObjectDetail(options, sourceType, objectId) {
+  if (!ZENTAO_ORPHAN_SOURCE_TYPES.has(sourceType) || !/^\d+$/u.test(String(objectId))) {
+    throw new Error(`无法验证不受支持的禅道对象：${sourceType} #${objectId}`);
+  }
+
+  const body = readOnlyCliJson(options, [sourceType, String(objectId)]);
+  const nested = body[sourceType];
+  if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+    return nested;
+  }
+  if (body.data && typeof body.data === 'object' && !Array.isArray(body.data)) {
+    return body.data;
+  }
+  if (String(body.id || '') === String(objectId)) {
+    return body;
+  }
+
+  return null;
 }
 
 function loadStoryDetails(options, stories, context) {
@@ -1316,106 +1328,19 @@ function decodeHtmlEntities(value) {
   });
 }
 
-function htmlAttribute(tag, name) {
-  const pattern = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'iu');
-  const match = String(tag || '').match(pattern);
-  return decodeHtmlEntities(match?.[1] ?? match?.[2] ?? match?.[3] ?? '');
-}
-
-function detectImageExtension(content, suggested = '') {
-  if (content.length >= 8 && content.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return 'png';
-  if (content.length >= 3 && content[0] === 255 && content[1] === 216 && content[2] === 255) return 'jpg';
-  if (content.length >= 6 && ['GIF87a', 'GIF89a'].includes(content.subarray(0, 6).toString('ascii'))) return 'gif';
-  if (content.length >= 12 && content.subarray(0, 4).toString('ascii') === 'RIFF' && content.subarray(8, 12).toString('ascii') === 'WEBP') return 'webp';
-  if (content.length >= 2 && content.subarray(0, 2).toString('ascii') === 'BM') return 'bmp';
-
-  const normalized = String(suggested || '').replace(/^\./u, '').toLowerCase();
-  if (!SAFE_IMAGE_EXTENSIONS.has(normalized)) return '';
-  return normalized === 'jpeg' ? 'jpg' : normalized;
-}
-
-function safeMarkdownImageAlt(value) {
-  return decodeHtmlEntities(value).replace(/[\[\]\r\n]+/g, ' ').trim() || '禅道图片';
-}
-
 /**
- * 为单个迭代维护富文本资源缓存，预览阶段只读取到内存，应用阶段才写入 vault。
+ * 创建禅道富文本转换上下文。
+ *
+ * 需求、任务和备注中的图片不再参与同步，避免每次刷新重复下载低价值资源。
+ * 已经存在于 vault 的历史图片保持原样，不在普通同步中自动删除。
  */
-function createRichTextContext(options, context, taskFolder) {
+function createRichTextContext(context) {
   const assets = new Map();
-  const downloaded = new Map();
-  const warningKeys = new Set();
-  const serverUrl = new URL(String(context.server || DEFAULT_SERVER));
-
-  const warnOnce = (key, message) => {
-    if (warningKeys.has(key)) return;
-    warningKeys.add(key);
-    context.assetWarnings.push(message);
-  };
-
-  const resolveImage = (source, alt, ownerKind, ownerId) => {
-    let imageUrl;
-    try {
-      imageUrl = new URL(source, serverUrl.origin);
-    } catch {
-      warnOnce(`invalid:${source}`, `${ownerKind} #${ownerId} 包含无法识别的图片地址，已忽略`);
-      return `[${safeMarkdownImageAlt(alt)}（图片地址无效）]`;
-    }
-
-    if (!['http:', 'https:'].includes(imageUrl.protocol) || imageUrl.origin !== serverUrl.origin) {
-      if (['http:', 'https:'].includes(imageUrl.protocol)) {
-        return `![${safeMarkdownImageAlt(alt)}](${imageUrl.toString().replace(/\)/g, '%29')})`;
-      }
-      warnOnce(`protocol:${source}`, `${ownerKind} #${ownerId} 包含非 HTTP 图片地址，已忽略`);
-      return `[${safeMarkdownImageAlt(alt)}（图片已忽略）]`;
-    }
-
-    const legacyFileMatch = imageUrl.pathname.match(/\/file-read-(\d+)\.([a-z0-9]+)$/iu);
-    const fileId = String(
-      imageUrl.searchParams.get('fileID')
-      || legacyFileMatch?.[1]
-      || imageUrl.pathname.match(/\/files\/(\d+)/u)?.[1]
-      || '',
-    );
-    if (!/^\d+$/u.test(fileId)) {
-      warnOnce(`file-id:${source}`, `${ownerKind} #${ownerId} 的图片缺少可识别 fileID，已保留远端链接`);
-      return `![${safeMarkdownImageAlt(alt)}](${imageUrl.toString().replace(/\)/g, '%29')})`;
-    }
-
-    try {
-      let downloadedAsset = downloaded.get(fileId);
-      if (!downloadedAsset) {
-        const content = readOnlyApiBinary(options, `files/${fileId}`);
-        const extension = detectImageExtension(content, imageUrl.searchParams.get('t') || legacyFileMatch?.[2]);
-        if (!extension) throw new Error('文件内容不是受支持的位图格式');
-        downloadedAsset = { content, extension };
-        downloaded.set(fileId, downloadedAsset);
-      }
-
-      const ownerFolder = `${safeFilePart(ownerKind, 'item')}-${safeFilePart(ownerId, 'unknown')}`;
-      const filePath = path.join(
-        taskFolder,
-        ZENTAO_ASSETS_FOLDER,
-        ownerFolder,
-        `file-${fileId}.${downloadedAsset.extension}`,
-      );
-      assets.set(filePath, downloadedAsset.content);
-      const vaultPath = path.relative(context.vault, filePath).replace(/\\/g, '/');
-      return `![[${vaultPath}]]`;
-    } catch (error) {
-      warnOnce(
-        `download:${fileId}`,
-        `${ownerKind} #${ownerId} 的图片文件 #${fileId} 下载失败：${redactSensitiveText(error.message)}`,
-      );
-      return `[${safeMarkdownImageAlt(alt)}（图片 #${fileId} 下载失败）](${imageUrl.toString().replace(/\)/g, '%29')})`;
-    }
-  };
 
   return {
     assets,
-    render(value, ownerKind, ownerId) {
+    render(value) {
       return htmlToMarkdown(value, {
-        resolveImage: (source, alt) => resolveImage(source, alt, ownerKind, ownerId),
         server: context.server,
       });
     },
@@ -1428,23 +1353,11 @@ function htmlToMarkdown(value, options = {}) {
     .replace(/<!--(?:[\s\S]*?)-->/g, '');
 
   source = source
-    .replace(/<img\b[^>]*>/gi, (tag) => {
-      const imageSource = htmlAttribute(tag, 'src');
-      const alt = htmlAttribute(tag, 'alt');
-      if (!imageSource) return '';
-      if (typeof options.resolveImage === 'function') {
-        return `\n\n${options.resolveImage(imageSource, alt)}\n\n`;
-      }
-      try {
-        const absolute = new URL(imageSource, new URL(options.server || DEFAULT_SERVER).origin).toString();
-        return `\n\n![${safeMarkdownImageAlt(alt)}](${absolute.replace(/\)/g, '%29')})\n\n`;
-      } catch {
-        return '';
-      }
-    })
+    .replace(/<img\b[^>]*>/gi, '')
     .replace(/<a\b[^>]*href=(?:"([^"]*)"|'([^']*)')[^>]*>([\s\S]*?)<\/a\s*>/gi, (match, doubleQuoted, singleQuoted, label) => {
       const href = decodeHtmlEntities(doubleQuoted ?? singleQuoted ?? '');
-      const text = decodeHtmlEntities(String(label || '').replace(/<[^>]+>/g, '')).trim() || href;
+      const text = decodeHtmlEntities(String(label || '').replace(/<[^>]+>/g, '')).trim();
+      if (!text) return '';
       if (!href || /^javascript:/iu.test(href)) return text;
       try {
         const absolute = new URL(href, new URL(options.server || DEFAULT_SERVER).origin).toString();
@@ -1467,6 +1380,7 @@ function htmlToMarkdown(value, options = {}) {
     .replace(/[ \t]+\n/g, '\n');
 
   return decodeHtmlEntities(source)
+    .replace(/!\[[^\]]*\]\([^\r\n)]*\)/g, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
@@ -2080,6 +1994,19 @@ function parseScalar(frontmatter, key) {
   return raw;
 }
 
+/**
+ * 读取 Frontmatter 对象中的一级子属性。
+ */
+function parseNestedScalar(frontmatter, parentKey, childKey) {
+  const range = findFrontmatterPropertyRange(frontmatter, parentKey);
+  if (range.start < 0) {
+    return '';
+  }
+
+  const block = range.lines.slice(range.start + 1, range.end).join('\n');
+  return parseScalar(block.replace(/^  /gm, ''), childKey);
+}
+
 function walkMarkdownFiles(directory) {
   if (!fs.existsSync(directory)) {
     return [];
@@ -2107,8 +2034,13 @@ function scanExistingTasks(taskFolder) {
     const split = splitFrontmatter(content);
     const id = String(parseScalar(split.frontmatter, 'id') || '');
     const isTask = String(parseScalar(split.frontmatter, 'pm-task')) === 'true';
+    const rawTags = parseScalar(split.frontmatter, 'tags');
+    const tags = Array.isArray(rawTags) ? rawTags.map(String) : [];
+    const isZenTaoManaged = tags.includes('zentao');
+    const syncState = String(parseNestedScalar(split.frontmatter, 'customFields', 'zentaoSyncState') || '');
 
-    if (!id || !isTask) {
+    // 软失效遗留笔记使用 pm-task: false，但仍需按稳定 ID 纳入扫描，便于重新出现时原位恢复。
+    if (!id || (!isTask && !(isZenTaoManaged && syncState))) {
       continue;
     }
 
@@ -2116,13 +2048,14 @@ function scanExistingTasks(taskFolder) {
       throw new Error(`检测到重复的 Project Manager 任务 ID：${id}`);
     }
 
-    const rawTags = parseScalar(split.frontmatter, 'tags');
-    const tags = Array.isArray(rawTags) ? rawTags.map(String) : [];
-
     byId.set(id, {
       filePath,
       content,
-      isZenTaoManaged: tags.includes('zentao'),
+      isTask,
+      isZenTaoManaged,
+      syncState,
+      sourceType: String(parseNestedScalar(split.frontmatter, 'customFields', 'zentaoSourceType') || ''),
+      zentaoId: String(parseNestedScalar(split.frontmatter, 'customFields', 'zentaoId') || ''),
     });
     metadata.set(id, {
       createdAt: String(parseScalar(split.frontmatter, 'createdAt') || ''),
@@ -2209,6 +2142,8 @@ function listLocalExecutionProjects(vault, projectsDirectory) {
       id: idMatch[1],
       projectId,
       filePath,
+      content,
+      frontmatter: split.frontmatter,
       archived: archivedProjectIds.has(projectId)
         || String(parseScalar(split.frontmatter, 'archived')) === 'true',
     });
@@ -2325,6 +2260,244 @@ function renderFrontmatter(values) {
 }
 
 /**
+ * 从禅道详情对象中提取全部迭代 ID，兼容任务单值和需求多迭代结构。
+ */
+function extractRemoteExecutionIds(sourceType, remoteObject) {
+  const executionIds = new Set();
+  const addExecutionId = (value) => {
+    const executionId = extractObjectId(value);
+    if (/^\d+$/u.test(executionId) && executionId !== '0') {
+      executionIds.add(executionId);
+    }
+  };
+
+  addExecutionId(remoteObject?.execution);
+  addExecutionId(remoteObject?.executionID);
+
+  if (sourceType === 'story') {
+    const executions = remoteObject?.executions;
+    if (Array.isArray(executions)) {
+      for (const execution of executions) {
+        addExecutionId(execution);
+      }
+    } else if (executions && typeof executions === 'object') {
+      for (const [executionId, execution] of Object.entries(executions)) {
+        addExecutionId(executionId);
+        addExecutionId(execution);
+      }
+    }
+  }
+
+  return [...executionIds].sort((left, right) => Number(left) - Number(right));
+}
+
+/**
+ * 使用只读详情判断遗留事项的远端状态。
+ */
+function verifyOrphanedItem(options, context, executionId, existing) {
+  const sourceType = String(existing.sourceType || '');
+  const zentaoId = String(existing.zentaoId || '');
+  if (!ZENTAO_ORPHAN_SOURCE_TYPES.has(sourceType) || !/^\d+$/u.test(zentaoId)) {
+    return {
+      state: ZENTAO_ORPHAN_STATE.MISSING_UNCONFIRMED,
+      remoteExecutionIds: [],
+    };
+  }
+
+  try {
+    const remoteObject = loadZenTaoObjectDetail(options, sourceType, zentaoId);
+    if (!remoteObject) {
+      return {
+        state: ZENTAO_ORPHAN_STATE.MISSING_UNCONFIRMED,
+        remoteExecutionIds: [],
+      };
+    }
+
+    const remoteExecutionIds = extractRemoteExecutionIds(sourceType, remoteObject);
+    if (String(remoteObject.deleted || '0') === '1') {
+      return {
+        state: ZENTAO_ORPHAN_STATE.DELETED_REMOTE,
+        remoteExecutionIds,
+      };
+    }
+    if (remoteExecutionIds.includes(String(executionId))) {
+      // 详情仍指向当前迭代但列表未返回时，不能擅自推断原因。
+      return {
+        state: ZENTAO_ORPHAN_STATE.MISSING_UNCONFIRMED,
+        remoteExecutionIds,
+      };
+    }
+    if (remoteExecutionIds.length > 0) {
+      return {
+        state: ZENTAO_ORPHAN_STATE.MOVED_TO_OTHER_EXECUTION,
+        remoteExecutionIds,
+      };
+    }
+
+    return {
+      state: ZENTAO_ORPHAN_STATE.REMOVED_FROM_EXECUTION,
+      remoteExecutionIds: [],
+    };
+  } catch (error) {
+    const sourceLabel = sourceType === 'story' ? '需求' : '任务';
+    context.orphanWarnings.push(`迭代 #${executionId} 的${sourceLabel} #${zentaoId} 遗留状态验证失败，已保留原文件并从活动视图隔离`);
+    return {
+      state: ZENTAO_ORPHAN_STATE.VERIFY_FAILED,
+      remoteExecutionIds: [],
+    };
+  }
+}
+
+/**
+ * 读取已有遗留清单，格式异常时停止当前迭代，避免覆盖审计历史。
+ */
+function readOrphanedItemsData(filePath) {
+  if (!fs.existsSync(filePath)) {
+    return { content: null, data: null };
+  }
+
+  const content = fs.readFileSync(filePath, 'utf8');
+  try {
+    const data = JSON.parse(content);
+    if (Number(data.schemaVersion) !== 1 || !Array.isArray(data.records)) {
+      throw new Error('schemaVersion 或 records 不符合约定');
+    }
+    return { content, data };
+  } catch (error) {
+    throw new Error(`无法解析禅道遗留清单 ${filePath}：${error.message}`);
+  }
+}
+
+/**
+ * 生成当前迭代的遗留清单，并识别本次新增、持续遗留和恢复事项。
+ */
+function buildOrphanedItemsModel(options, context, model, executionId) {
+  const filePath = path.join(
+    path.dirname(model.project.filePath),
+    EXECUTION_DATA_SUPPORT_FOLDER,
+    EXECUTION_ORPHANED_ITEMS_FILE,
+  );
+  const existingManifest = readOrphanedItemsData(filePath);
+  const previousRecords = Array.isArray(existingManifest.data?.records)
+    ? existingManifest.data.records
+    : [];
+  const previousById = new Map(previousRecords.map((record) => [String(record.id || ''), record]));
+  const generatedTaskIds = new Set(
+    flattenNodes(model.project.roots).map(({ node }) => String(node.task.id)),
+  );
+  const restored = previousRecords.filter((record) => generatedTaskIds.has(String(record.id || '')));
+  const records = [];
+
+  for (const [id, existing] of model.existingTasks.byId) {
+    if (generatedTaskIds.has(id) || !existing.isZenTaoManaged) {
+      continue;
+    }
+
+    const previous = previousById.get(id);
+    const verification = verifyOrphanedItem(options, context, executionId, existing);
+    const stateChanged = String(previous?.state || '') !== verification.state;
+    records.push({
+      id,
+      sourceType: String(existing.sourceType || ''),
+      zentaoId: String(existing.zentaoId || ''),
+      filePath: path.relative(context.vault, existing.filePath).replace(/\\/g, '/'),
+      state: verification.state,
+      firstMissingAt: String(previous?.firstMissingAt || context.syncTimestamp),
+      lastCheckedAt: context.syncTimestamp,
+      stateChangedAt: stateChanged
+        ? context.syncTimestamp
+        : String(previous?.stateChangedAt || previous?.firstMissingAt || context.syncTimestamp),
+      missingSyncCount: Number(previous?.missingSyncCount || 0) + 1,
+      remoteExecutionIds: verification.remoteExecutionIds,
+    });
+  }
+
+  records.sort((left, right) => (
+    left.sourceType.localeCompare(right.sourceType, 'zh-CN')
+    || Number(left.zentaoId || 0) - Number(right.zentaoId || 0)
+    || left.id.localeCompare(right.id, 'zh-CN')
+  ));
+  const counts = {};
+  for (const state of Object.values(ZENTAO_ORPHAN_STATE)) {
+    counts[state] = records.filter((record) => record.state === state).length;
+  }
+
+  const dataHash = crypto.createHash('sha256').update(JSON.stringify(records)).digest('hex');
+  const data = {
+    schemaVersion: 1,
+    projectId: model.project.id,
+    executionId: String(executionId),
+    generatedAt: context.syncTimestamp,
+    dataHash,
+    recordCount: records.length,
+    counts,
+    records,
+  };
+  const content = existingManifest.data?.dataHash === dataHash
+    ? existingManifest.content
+    : `${JSON.stringify(data, null, 2)}\n`;
+
+  return {
+    filePath,
+    content,
+    records,
+    restored,
+    newCount: records.filter((record) => !previousById.has(record.id)).length,
+    continuedCount: records.filter((record) => previousById.has(record.id)).length,
+  };
+}
+
+/**
+ * 将遗留笔记软失效，只更新同步生命周期字段，正文和其余 Frontmatter 保持原样。
+ */
+function renderOrphanedTaskContent(existingContent, record) {
+  const split = splitFrontmatter(existingContent);
+  if (!split.frontmatter) {
+    throw new Error(`禅道遗留事项缺少 Frontmatter：${record.filePath}`);
+  }
+
+  const lines = split.frontmatter.split(/\r?\n/);
+  const taskIndex = lines.findIndex((line) => /^pm-task:[ \t]*/u.test(line));
+  if (taskIndex < 0) {
+    throw new Error(`禅道遗留事项缺少 pm-task 属性：${record.filePath}`);
+  }
+  lines[taskIndex] = 'pm-task: false';
+
+  const customRange = findFrontmatterPropertyRange(lines.join('\n'), 'customFields');
+  if (customRange.start < 0) {
+    throw new Error(`禅道遗留事项缺少 customFields：${record.filePath}`);
+  }
+
+  const managedFields = {
+    zentaoSyncState: record.state,
+    zentaoMissingSince: record.firstMissingAt,
+    zentaoLastCheckedAt: record.lastCheckedAt,
+    zentaoStateChangedAt: record.stateChangedAt,
+    zentaoMissingCount: record.missingSyncCount,
+    zentaoRemoteExecutionIds: record.remoteExecutionIds,
+  };
+  const managedKeys = new Set(Object.keys(managedFields));
+  const customLines = customRange.lines
+    .slice(customRange.start + 1, customRange.end)
+    .filter((line) => {
+      const child = line.match(/^  ([A-Za-z0-9_-]+):/u);
+      return !child || !managedKeys.has(child[1]);
+    });
+  const renderedManagedFields = [];
+  for (const [key, value] of Object.entries(managedFields)) {
+    renderYamlValue(renderedManagedFields, key, value, 1);
+  }
+
+  const mergedFrontmatter = [
+    ...customRange.lines.slice(0, customRange.start + 1),
+    ...customLines,
+    ...renderedManagedFields,
+    ...customRange.lines.slice(customRange.end),
+  ].join('\n');
+  return `---\n${mergedFrontmatter}\n---\n${split.body}`;
+}
+
+/**
  * 查找 Frontmatter 顶层属性占用的行范围。
  *
  * 同时兼容单行属性和带缩进的 YAML 数组、对象，便于只替换同步归属属性。
@@ -2344,6 +2517,83 @@ function findFrontmatterPropertyRange(frontmatter, key) {
   }
 
   return { lines, start, end };
+}
+
+/**
+ * 读取 Frontmatter 对象的一级子属性块，属性值为数组或对象时一并保留完整缩进内容。
+ */
+function frontmatterChildPropertyBlocks(frontmatter, parentKey) {
+  const parentRange = findFrontmatterPropertyRange(frontmatter, parentKey);
+  if (parentRange.start < 0) {
+    return [];
+  }
+
+  const parentIndent = (parentRange.lines[parentRange.start].match(/^[ \t]*/u) || [''])[0].length;
+  const childIndent = parentIndent + 2;
+  const blocks = [];
+  let currentBlock = null;
+
+  for (let index = parentRange.start + 1; index < parentRange.end; index += 1) {
+    const line = parentRange.lines[index];
+    const childMatch = line.match(/^([ \t]+)([A-Za-z0-9_-]+):/u);
+    if (childMatch && childMatch[1].length === childIndent) {
+      if (currentBlock) {
+        currentBlock.end = index;
+        currentBlock.lines = parentRange.lines.slice(currentBlock.start, currentBlock.end);
+        blocks.push(currentBlock);
+      }
+
+      currentBlock = {
+        key: childMatch[2],
+        start: index,
+        end: parentRange.end,
+        lines: [],
+      };
+    }
+  }
+
+  if (currentBlock) {
+    currentBlock.lines = parentRange.lines.slice(currentBlock.start, currentBlock.end);
+    blocks.push(currentBlock);
+  }
+
+  return blocks;
+}
+
+/**
+ * 合并事项中的本地自定义字段。
+ *
+ * 禅道同步字段由本次结果全量重建；插件或人工维护的未知字段直接沿用旧 YAML 块，
+ * 避免任务完整性例外、审计原因等本地状态在刷新禅道数据时被覆盖。
+ */
+function preserveLocalTaskCustomFields(existingContent, generatedContent) {
+  if (!existingContent) {
+    return generatedContent;
+  }
+
+  const existing = splitFrontmatter(existingContent);
+  const generated = splitFrontmatter(generatedContent);
+  const generatedBlocks = frontmatterChildPropertyBlocks(generated.frontmatter, 'customFields');
+  const generatedKeys = new Set(generatedBlocks.map((block) => block.key));
+  const localBlocks = frontmatterChildPropertyBlocks(existing.frontmatter, 'customFields')
+    .filter((block) => !ZENTAO_MANAGED_TASK_CUSTOM_FIELDS.has(block.key))
+    .filter((block) => !generatedKeys.has(block.key));
+
+  if (localBlocks.length === 0) {
+    return generatedContent;
+  }
+
+  const generatedRange = findFrontmatterPropertyRange(generated.frontmatter, 'customFields');
+  if (generatedRange.start < 0) {
+    throw new Error('禅道事项缺少 customFields，无法合并本地自定义字段');
+  }
+
+  const mergedFrontmatter = [
+    ...generatedRange.lines.slice(0, generatedRange.end),
+    ...localBlocks.flatMap((block) => block.lines),
+    ...generatedRange.lines.slice(generatedRange.end),
+  ].join('\n');
+  return `---\n${mergedFrontmatter}\n---\n${generated.body}`;
 }
 
 /** 将属性值转换为稳定结构，避免对象键顺序造成无效差异。 */
@@ -2491,7 +2741,8 @@ function renderTaskContent(node, parent, project, existingContent) {
     bodyParts.push(links.join('\n'));
   }
 
-  return `${renderFrontmatter(values)}${bodyParts.join('\n\n')}\n`;
+  const generatedContent = `${renderFrontmatter(values)}${bodyParts.join('\n\n')}\n`;
+  return preserveLocalTaskCustomFields(existingContent, generatedContent);
 }
 
 function renderProjectContent(project) {
@@ -2872,8 +3123,7 @@ function defaultSavedViews(currentPerson) {
   return views;
 }
 
-function prepareProjectTarget(context, projectId, target) {
-  const existingProject = findExistingProjectFile(context.projectsDirectory, projectId);
+function prepareProjectTarget(context, projectId, target, existingProject) {
   const projectFile = existingProject?.filePath || target.projectFile;
   if (!existingProject && fs.existsSync(projectFile)) {
     throw new Error(`目标项目文件已存在且不属于当前禅道对象：${projectFile}`);
@@ -2935,7 +3185,11 @@ function finalizeProjectModel(context, target, source, specification) {
 function createExecutionModel(options, context, execution) {
   const executionId = String(execution.id);
   const projectId = `zentao-execution-${executionId}`;
-  const existingProject = findExistingProjectFile(context.projectsDirectory, projectId);
+  const existingProject = context.existingProjects.get(projectId)
+    || findExistingProjectFile(context.projectsDirectory, projectId);
+  if (existingProject) {
+    context.existingProjects.set(projectId, existingProject);
+  }
   const systemFolder = existingProject
     ? ''
     : resolveSystemFolder(context.projectsDirectory, options.systemFolder, executionId);
@@ -2947,7 +3201,7 @@ function createExecutionModel(options, context, execution) {
   const target = prepareProjectTarget(context, projectId, {
     projectFile: path.join(executionDirectory, EXECUTION_OVERVIEW_FILE),
     taskFolder: path.join(executionDirectory, EXECUTION_TASKS_FOLDER),
-  });
+  }, existingProject);
   const rawStories = loadStories(options, executionId);
   const tasks = loadTasks(options, executionId);
   const rawBugs = loadBugs(options, executionId);
@@ -2968,7 +3222,7 @@ function createExecutionModel(options, context, execution) {
       storyVerify: task.storyVerify || linkedStory.verify || '',
     };
   });
-  const richText = createRichTextContext(options, context, target.taskFolder);
+  const richText = createRichTextContext(context);
 
   try {
     mergeModuleNames(context.moduleNames, loadExecutionModuleNames(options, executionId));
@@ -3027,17 +3281,26 @@ function createExecutionModel(options, context, execution) {
   model.iterationSummaryFile = iterationSummary.filePath;
   model.iterationSummaryData = iterationSummary.data;
   model.iterationSummaryContent = iterationSummary.content;
+  model.orphanedItems = buildOrphanedItemsModel(options, context, model, executionId);
   createExecutionSupportingNotes(context, model, execution);
   return model;
 }
 
-function createBundleContext(options, vault, projectsFolder) {
+function createBundleContext(options, vault, projectsFolder, localProjects = []) {
   const profileBody = readOnlyCliJson(options, ['profile']);
   const profile = (profileBody.profiles || []).find((item) => item.current) || {};
+  if (options.profileCache) {
+    options.profileCache.cli = profile;
+  }
   const server = profile.server || DEFAULT_SERVER;
   const users = loadUsers(options);
   const person = createPersonResolver(users);
   const moduleNames = new Map([['0', '未设置']]);
+  const existingProjects = new Map(localProjects.map((project) => [project.projectId, {
+    filePath: project.filePath,
+    content: project.content,
+    frontmatter: project.frontmatter,
+  }]));
   return {
     vault,
     projectsFolder,
@@ -3045,17 +3308,28 @@ function createBundleContext(options, vault, projectsFolder) {
     server,
     person,
     currentPerson: person(profile.account) || profile.account || '',
+    existingProjects,
     moduleNames,
     moduleName: createModuleResolver(moduleNames),
     moduleWarnings: [],
     assetWarnings: [],
+    orphanWarnings: [],
     storyDetails: new Map(),
     storyWarnings: [],
+    syncTimestamp: new Date().toISOString(),
   };
 }
 
-function createExecutionBundle(options, vault, projectsFolder, executionIds, scope, skippedArchivedProjects = []) {
-  const context = createBundleContext(options, vault, projectsFolder);
+function createExecutionBundle(
+  options,
+  vault,
+  projectsFolder,
+  executionIds,
+  scope,
+  skippedArchivedProjects = [],
+  localProjects = [],
+) {
+  const context = createBundleContext(options, vault, projectsFolder, localProjects);
   const executions = loadExecutions(options);
   const executionsById = new Map(executions.map((execution) => [String(execution.id), execution]));
   const missingIds = executionIds.filter((executionId) => !executionsById.has(String(executionId)));
@@ -3101,7 +3375,12 @@ function createLocalProjectsBundle(options, vault, projectsFolder) {
   if (selectedProjects.length === 0) {
     return {
       scope: 'local-executions',
-      context: { moduleWarnings: [], assetWarnings: [], storyWarnings: [] },
+      context: {
+        moduleWarnings: [],
+        assetWarnings: [],
+        orphanWarnings: [],
+        storyWarnings: [],
+      },
       models: [],
       skippedArchivedProjects,
     };
@@ -3114,6 +3393,7 @@ function createLocalProjectsBundle(options, vault, projectsFolder) {
     selectedProjects.map((project) => project.id),
     'local-executions',
     skippedArchivedProjects,
+    localProjects,
   );
 }
 
@@ -3212,26 +3492,71 @@ function calculateChanges(model) {
   }
 
   const orphaned = [];
-  for (const [id, existing] of model.existingTasks.byId) {
-    if (!generatedTaskIds.has(id) && existing.isZenTaoManaged) {
-      orphaned.push(existing.filePath);
+  for (const record of model.orphanedItems?.records || []) {
+    const existing = model.existingTasks.byId.get(record.id);
+    if (!existing) {
+      throw new Error(`遗留清单引用了不存在的本地事项：${record.filePath}`);
     }
+
+    const content = renderOrphanedTaskContent(existing.content, record);
+    changes.push({
+      type: existing.content === content ? 'unchanged' : 'update',
+      filePath: existing.filePath,
+      content,
+      orphanedNote: true,
+      propertyChanges: existing.content === content
+        ? []
+        : [
+          'pm-task',
+          'customFields.zentaoSyncState',
+          'customFields.zentaoMissingSince',
+          'customFields.zentaoLastCheckedAt',
+          'customFields.zentaoStateChangedAt',
+          'customFields.zentaoMissingCount',
+          'customFields.zentaoRemoteExecutionIds',
+        ],
+    });
+    orphaned.push({
+      ...record,
+      filePath: existing.filePath,
+    });
   }
 
-  return { changes, orphaned };
+  if (model.orphanedItems?.filePath && model.orphanedItems?.content !== null) {
+    const existingOrphanedItems = fs.existsSync(model.orphanedItems.filePath)
+      ? fs.readFileSync(model.orphanedItems.filePath, 'utf8')
+      : null;
+    changes.push({
+      type: existingOrphanedItems === null
+        ? 'create'
+        : (existingOrphanedItems === model.orphanedItems.content ? 'unchanged' : 'update'),
+      filePath: model.orphanedItems.filePath,
+      content: model.orphanedItems.content,
+      dataSupport: true,
+      orphanedItems: true,
+    });
+  }
+
+  return {
+    changes,
+    orphaned,
+    restored: model.orphanedItems?.restored || [],
+  };
 }
 
 function calculateBundleChanges(bundle) {
   const changes = [];
   const orphaned = [];
+  const restored = [];
 
   for (const model of bundle.models) {
     const result = calculateChanges(model);
     changes.push(...result.changes);
     orphaned.push(...result.orphaned);
+    restored.push(...result.restored);
   }
 
-  return { changes, orphaned };
+  return { changes, orphaned, restored };
 }
 
 function writeAtomic(filePath, content) {
@@ -3271,6 +3596,10 @@ function summarize(bundle, result, applied, vault) {
       }
     }
   }
+  const orphanStateCounts = {};
+  for (const state of Object.values(ZENTAO_ORPHAN_STATE)) {
+    orphanStateCounts[state] = result.orphaned.filter((record) => record.state === state).length;
+  }
 
   return {
     mode: applied ? 'apply' : 'dry-run',
@@ -3297,6 +3626,8 @@ function summarize(bundle, result, applied, vault) {
       iterationSummaryCoverage: model.iterationSummaryData?.coverage || {},
       unassignedRequirementCount: model.iterationSummaryData?.unassigned?.requirementIds?.length || 0,
       unassignedIndependentTaskCount: model.iterationSummaryData?.unassigned?.independentTaskIds?.length || 0,
+      orphanedItemsFile: model.orphanedItems?.filePath ? relative(model.orphanedItems.filePath) : '',
+      orphanedItemCount: model.orphanedItems?.records?.length || 0,
       supportingNotes: (model.supportingNotes || []).map((note) => relative(note.filePath)),
     })),
     requirementCount: bundle.models.reduce(
@@ -3316,6 +3647,16 @@ function summarize(bundle, result, applied, vault) {
     changes: counts,
     managementTags,
     propertyUpdateCount: result.changes.filter((change) => change.propertyChanges?.length > 0).length,
+    newOrphanedItemCount: bundle.models.reduce(
+      (total, model) => total + Number(model.orphanedItems?.newCount || 0),
+      0,
+    ),
+    continuedOrphanedItemCount: bundle.models.reduce(
+      (total, model) => total + Number(model.orphanedItems?.continuedCount || 0),
+      0,
+    ),
+    restoredItemCount: result.restored.length,
+    orphanStateCounts,
     files: result.changes
       .filter((change) => change.type !== 'unchanged')
       .map((change) => ({
@@ -3323,10 +3664,26 @@ function summarize(bundle, result, applied, vault) {
         path: relative(change.filePath),
         propertyChanges: change.propertyChanges || [],
       })),
-    orphanedFiles: result.orphaned.map(relative),
+    orphanedFiles: result.orphaned.map((record) => relative(record.filePath)),
+    orphanedItems: result.orphaned.map((record) => ({
+      id: record.id,
+      sourceType: record.sourceType,
+      zentaoId: record.zentaoId,
+      state: record.state,
+      path: relative(record.filePath),
+      missingSyncCount: record.missingSyncCount,
+      remoteExecutionIds: record.remoteExecutionIds,
+    })),
+    restoredItems: result.restored.map((record) => ({
+      id: String(record.id || ''),
+      sourceType: String(record.sourceType || ''),
+      zentaoId: String(record.zentaoId || ''),
+      path: String(record.filePath || ''),
+    })),
     warnings: [
       ...bundle.context.moduleWarnings,
       ...bundle.context.assetWarnings,
+      ...bundle.context.orphanWarnings,
       ...bundle.context.storyWarnings,
     ],
   };
@@ -3339,7 +3696,7 @@ function printSummary(summary, asJson, compact) {
   }
 
   console.log(`${summary.mode === 'apply' ? '已同步' : '预览完成'}：${summary.scope}`);
-  console.log(`本地项目：${summary.projects.length} 个；需求：${summary.requirementCount}；任务：${summary.taskCount}；里程碑：${summary.milestoneCount}；Bug事实：${summary.bugFactCount}；富文本资源：${summary.assetCount}`);
+  console.log(`本地项目：${summary.projects.length} 个；需求：${summary.requirementCount}；任务：${summary.taskCount}；里程碑：${summary.milestoneCount}；Bug事实：${summary.bugFactCount}；图片资源同步：已关闭`);
   if (summary.skippedArchivedProjects.length > 0) {
     console.log(`已跳过归档项目：${summary.skippedArchivedProjects.length} 个（${summary.skippedArchivedProjects.map((project) => `#${project.id}`).join('、')}）`);
   }
@@ -3364,6 +3721,7 @@ function printSummary(summary, asJson, compact) {
       unchanged: '无变化',
     }[project.iterationSummaryStatus] || project.iterationSummaryStatus;
     console.log(`迭代总结：${iterationSummaryStatus}；${project.iterationSummaryFile}；需求内容覆盖 ${project.iterationSummaryCoverage.requirementWithDescription || 0}/${project.iterationSummaryCoverage.requirementTotal || 0}`);
+    console.log(`遗留清单：${project.orphanedItemCount} 项；${project.orphanedItemsFile}`);
     if (project.unassignedRequirementCount > 0 || project.unassignedIndependentTaskCount > 0) {
       console.log(`未安排交付：需求 ${project.unassignedRequirementCount}；独立任务 ${project.unassignedIndependentTaskCount}`);
     }
@@ -3390,10 +3748,30 @@ function printSummary(summary, asJson, compact) {
     }
   }
 
-  if (summary.orphanedFiles.length > 0) {
-    console.log('以下旧任务文件未出现在本次禅道结果中，已保留且未删除：');
-    for (const filePath of summary.orphanedFiles) {
-      console.log(`- ${filePath}`);
+  if (summary.orphanedItems.length > 0 || summary.restoredItemCount > 0) {
+    const stateLabels = {
+      [ZENTAO_ORPHAN_STATE.MISSING_UNCONFIRMED]: '待确认',
+      [ZENTAO_ORPHAN_STATE.MOVED_TO_OTHER_EXECUTION]: '移至其他迭代',
+      [ZENTAO_ORPHAN_STATE.REMOVED_FROM_EXECUTION]: '已移出迭代',
+      [ZENTAO_ORPHAN_STATE.DELETED_REMOTE]: '禅道已删除',
+      [ZENTAO_ORPHAN_STATE.VERIFY_FAILED]: '验证失败',
+    };
+    const stateSummary = Object.entries(summary.orphanStateCounts)
+      .filter(([, count]) => count > 0)
+      .map(([state, count]) => `${stateLabels[state] || state} ${count}`)
+      .join('，');
+    console.log(`遗留事项：新增 ${summary.newOrphanedItemCount}，持续 ${summary.continuedOrphanedItemCount}，恢复 ${summary.restoredItemCount}${stateSummary ? `；${stateSummary}` : ''}`);
+
+    for (const item of summary.orphanedItems) {
+      const sourceLabel = item.sourceType === 'story' ? '需求' : '任务';
+      const targetExecutions = item.remoteExecutionIds.length > 0
+        ? `；当前迭代 #${item.remoteExecutionIds.join('、#')}`
+        : '';
+      console.log(`- ${stateLabels[item.state] || item.state}：${sourceLabel} #${item.zentaoId || '未知'}；连续 ${item.missingSyncCount} 次${targetExecutions}；${item.path}`);
+    }
+    for (const item of summary.restoredItems) {
+      const sourceLabel = item.sourceType === 'story' ? '需求' : '任务';
+      console.log(`- 已恢复：${sourceLabel} #${item.zentaoId || '未知'}；${item.path}`);
     }
   }
 

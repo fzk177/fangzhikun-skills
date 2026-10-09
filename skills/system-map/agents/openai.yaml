@@ -1,7 +1,0 @@
-interface:
-  display_name: "系统架构建模"
-  short_description: "从真实代码生成带证据的架构 JSON，并交给 Obsidian Excalidraw 绘制"
-  default_prompt: "使用 $system-map 分析当前仓库的高层运行时架构，生成带源码证据的 system-map JSON，并用固定脚本校验。"
-
-policy:
-  allow_implicit_invocation: false

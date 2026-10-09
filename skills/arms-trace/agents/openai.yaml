@@ -1,0 +1,7 @@
+interface:
+  display_name: "ARMS 链路排查"
+  short_description: "只读查询阿里云调用链，定位异常 Span 和慢调用"
+  default_prompt: "使用 $arms-trace 查询指定环境的 ARMS 调用链并分析故障原因。"
+
+policy:
+  allow_implicit_invocation: false

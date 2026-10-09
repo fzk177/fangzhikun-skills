@@ -53,6 +53,8 @@ function printHelp() {
     '用法:',
     '  zentao_task_workflow.js --task <任务ID> --action complete --real-started <时间> --finished-date <时间> [选项]',
     '  zentao_task_workflow.js --task <任务ID> --action assign --assigned-to <账号> [选项]',
+    '  zentao_task_workflow.js --task <任务ID> --action comment --delivery-comment <四段交付备注> [选项]',
+    '  zentao_task_workflow.js --task <任务ID> --action restore-start --real-started <原实际开始时间> [选项]',
     '',
     '两阶段执行:',
     '  1. 不传 --apply：读取禅道，生成字段级预览和计划哈希，不写入禅道。',
@@ -60,7 +62,7 @@ function printHelp() {
     '',
     '选项:',
     '  --task <ID>                 禅道任务 ID',
-    '  --action <complete|assign>  完成任务或指派已完成任务',
+    '  --action <complete|assign|comment|restore-start>  完成任务、指派、新增备注或恢复开始时间',
     '  --real-started <时间>       实际开始时间，格式 YYYY-MM-DD HH:mm:ss',
     '  --finished-date <时间>      实际完成时间，格式 YYYY-MM-DD HH:mm:ss',
     '  --assigned-to <账号>        指派目标禅道账号',
@@ -154,8 +156,8 @@ function parseArgs(argv) {
   if (!options.taskId) {
     throw new Error('必须指定 --task <任务ID>');
   }
-  if (!['complete', 'assign'].includes(options.action)) {
-    throw new Error('--action 只允许 complete 或 assign');
+  if (!['complete', 'assign', 'comment', 'restore-start'].includes(options.action)) {
+    throw new Error('--action 只允许 complete、assign、comment 或 restore-start');
   }
   if (options.action === 'complete') {
     options.realStarted = normalizeDateTime(options.realStarted, '--real-started');
@@ -168,6 +170,18 @@ function parseArgs(argv) {
   if (options.action === 'assign' && !/^[A-Za-z0-9_.@-]+$/.test(options.assignedTo)) {
     throw new Error('--assigned-to 必须提供有效的禅道账号');
   }
+  if (options.action === 'comment') {
+    validateDeliveryComment(options.deliveryComment);
+    if (options.realStarted || options.finishedDate || options.assignedTo || options.comment) {
+      throw new Error('仅新增任务备注不能同时传入时间、指派或其他备注参数');
+    }
+  }
+  if (options.action === 'restore-start') {
+    options.realStarted = normalizeDateTime(options.realStarted, '--real-started');
+    if (options.finishedDate || options.assignedTo || options.comment || options.deliveryComment) {
+      throw new Error('恢复开始时间不能同时传入完成、指派或备注参数');
+    }
+  }
   if (options.apply && !/^[a-f0-9]{64}$/.test(options.planHash)) {
     throw new Error('--apply 必须同时提供完整的 64 位 --plan-hash');
   }
@@ -177,83 +191,39 @@ function parseArgs(argv) {
   return options;
 }
 
-const DELIVERY_COMMENT_SECTIONS = [
-  ['涉及模块', false],
-  ['主要调整', false],
-  ['验收口径', false],
-  ['其他影响', true],
-];
-
 /**
- * 按固定顺序解析四段交付备注，标题必须独占一行。
+ * 提取结构化需求备注的单个分段。
  *
- * @param {string} comment 完整交付备注
- * @returns {Map<string, string[]>} 标题到正文行的映射
+ * @param {string} comment 完整需求备注
+ * @param {string} heading 当前分段标题
+ * @param {string|null} nextHeading 下一分段标题
+ * @returns {string} 分段正文
  */
-function parseDeliveryCommentSections(comment) {
-  const text = String(comment || '').trim();
-  if (/\\(?:r\\n|n|r)/.test(text)) {
-    throw new Error('--delivery-comment 检测到字面量 \\n 或 \\r，必须传入真实换行');
-  }
-
-  const sectionNames = DELIVERY_COMMENT_SECTIONS.map(([heading]) => heading);
-  const headingPattern = new RegExp(`^\\s*(${sectionNames.join('|')})[：:]\\s*$`);
-  const inlineHeadingPattern = new RegExp(`^\\s*(${sectionNames.join('|')})[：:]`);
-  const sections = new Map();
-  let currentHeading = '';
-  let expectedIndex = 0;
-
-  for (const line of text.split(/\r\n|\n|\r/)) {
-    const headingMatch = line.match(headingPattern);
-    if (headingMatch) {
-      const heading = headingMatch[1];
-      const expectedHeading = sectionNames[expectedIndex];
-      if (heading !== expectedHeading) {
-        throw new Error(`--delivery-comment 分段顺序错误，当前位置必须是“${expectedHeading || '无额外分段'}：”`);
-      }
-      currentHeading = heading;
-      sections.set(heading, []);
-      expectedIndex += 1;
-      continue;
-    }
-
-    const inlineHeadingMatch = line.match(inlineHeadingPattern);
-    if (inlineHeadingMatch) {
-      throw new Error(`--delivery-comment 的“${inlineHeadingMatch[1]}：”标题必须独占一行`);
-    }
-    if (!currentHeading) {
-      if (line.trim()) {
-        throw new Error('--delivery-comment 必须从独占一行的“涉及模块：”开始');
-      }
-      continue;
-    }
-    sections.get(currentHeading).push(line);
-  }
-
-  if (expectedIndex !== sectionNames.length) {
-    throw new Error(`--delivery-comment 缺少独占一行的“${sectionNames[expectedIndex]}：”分段`);
-  }
-  return sections;
+function deliveryCommentSection(comment, heading, nextHeading) {
+  const escapedHeading = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const endPattern = nextHeading
+    ? `(?=${nextHeading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[：:])`
+    : '$';
+  const match = String(comment || '').match(new RegExp(`${escapedHeading}[：:]([\\s\\S]*?)${endPattern}`));
+  return match ? match[1].trim() : '';
 }
 
 /**
- * 提取分段内使用项目符号书写的交付条目。
+ * 判断分段中是否存在有意义的条目。
  *
- * @param {string[]} lines 分段正文行
- * @param {string} heading 分段标题
- * @returns {string[]} 条目正文
+ * @param {string} section 分段正文
+ * @param {boolean} allowNoImpact 是否允许明确声明无其他影响
+ * @returns {boolean} 是否有效
  */
-function deliveryCommentItems(lines, heading) {
-  const items = [];
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    const match = line.match(/^\s*[-*]\s+(.+?)\s*$/);
-    if (!match) {
-      throw new Error(`--delivery-comment 的“${heading}：”正文必须使用独立项目符号行（- ... 或 * ...）`);
-    }
-    items.push(match[1]);
-  }
-  return items;
+function hasMeaningfulDeliveryCommentItem(section, allowNoImpact = false) {
+  return String(section || '')
+    .split(/\r?\n/)
+    .some((line) => {
+      const item = line.replace(/^\s*[-*]\s*/, '').trim();
+      if (!item) return false;
+      if (allowNoImpact && /^无其他已知影响[。；;！!]?$/.test(item)) return true;
+      return !/^(?:无|无影响|无其他影响|无已知影响|无其他已知影响)[。；;！!]?$/.test(item);
+    });
 }
 
 /**
@@ -262,21 +232,19 @@ function deliveryCommentItems(lines, heading) {
  * @param {string} comment 需求备注
  */
 function validateDeliveryComment(comment) {
-  const sections = parseDeliveryCommentSections(comment);
-  const emptyValues = /^(?:无|无影响|无其他影响|无已知影响|无其他已知影响)[。；;！!]?$/;
+  const text = String(comment || '').trim();
+  const sections = [
+    ['涉及模块', '主要调整', false],
+    ['主要调整', '验收口径', false],
+    ['验收口径', '其他影响', false],
+    ['其他影响', null, true],
+  ];
 
-  for (const [heading, allowNoImpact] of DELIVERY_COMMENT_SECTIONS) {
-    const items = deliveryCommentItems(sections.get(heading), heading);
-    if (items.length === 0) {
+  for (const [heading, nextHeading, allowNoImpact] of sections) {
+    const section = deliveryCommentSection(text, heading, nextHeading);
+    if (!hasMeaningfulDeliveryCommentItem(section, allowNoImpact)) {
       const suffix = allowNoImpact ? '，经核实没有时可写“无其他已知影响”' : '，不能使用“无”占位';
       throw new Error(`--delivery-comment 的“${heading}：”必须包含具体内容${suffix}`);
-    }
-    for (const item of items) {
-      if (allowNoImpact && /^无其他已知影响[。；;！!]?$/.test(item)) continue;
-      if (emptyValues.test(item)) {
-        const suffix = allowNoImpact ? '，经核实没有时只能写“无其他已知影响”' : '，不能使用“无”占位';
-        throw new Error(`--delivery-comment 的“${heading}：”必须包含具体内容${suffix}`);
-      }
     }
   }
 }
@@ -326,6 +294,19 @@ function remoteSnapshot(task) {
   };
 }
 
+/** 需求业务字段快照，操作记录单独参与计划哈希，备注不允许改写业务字段。 */
+function storyBusinessSnapshot(story) {
+  const fields = ['id', 'title', 'spec', 'verify', 'status', 'stage', 'assignedTo',
+    'product', 'branch', 'module', 'parent', 'plan', 'source', 'sourceNote',
+    'pri', 'estimate', 'category', 'keywords', 'type', 'version', 'reviewedBy', 'mailto'];
+  return Object.fromEntries(fields.map((field) => [field, story[field] ?? null]));
+}
+
+function changedStoryFields(before, after, excluded = []) {
+  return Object.keys(before).filter((field) => !excluded.includes(field)
+    && JSON.stringify(before[field]) !== JSON.stringify(after[field]));
+}
+
 /**
  * 构造完成任务计划。
  *
@@ -364,6 +345,8 @@ function buildCompletePlan(options, task, story) {
     blockers.push('任务未关联需求，无法新增四段交付备注');
   } else if (!story || objectId(story.id) !== storyId) {
     blockers.push(`关联需求 #${storyId} 无法读取，不能核实备注写入路径`);
+  } else if (!Array.isArray(story.actions)) {
+    blockers.push(`需求 #${storyId} 操作记录无法回读，不能进入完成写入`);
   } else if (actionHistoryHasComment(story, options.deliveryComment)) {
     blockers.push(`需求 #${storyId} 已存在与本次预览完全一致的交付备注，拒绝重复新增`);
   }
@@ -434,7 +417,14 @@ function buildCompletePlan(options, task, story) {
     taskId: String(task.id),
     taskName: String(task.name || ''),
     storyId,
-    source: remoteSnapshot(task),
+    source: {
+      ...remoteSnapshot(task),
+      story: story ? {
+        business: storyBusinessSnapshot(story),
+        lastEditedDate: String(story.lastEditedDate || ''),
+        actionsHash: crypto.createHash('sha256').update(JSON.stringify(story.actions || [])).digest('hex'),
+      } : null,
+    },
     target: {
       status: 'done',
       realStarted: effectiveStartedAt,
@@ -500,6 +490,43 @@ function buildAssignPlan(options, task) {
  * @param {object} options 选项
  * @returns {object} 完整计划
  */
+function buildCommentPlan(options, task) {
+  const source = {
+    ...remoteSnapshot(task),
+    actionsHash: crypto.createHash('sha256').update(JSON.stringify(task.actions || [])).digest('hex'),
+  };
+  const blockers = [];
+  if (!Array.isArray(task.actions)) {
+    blockers.push('任务详情未返回操作记录，无法校验独立备注写入结果');
+  }
+  if (actionHistoryHasComment(task, options.deliveryComment)) {
+    blockers.push(`任务 #${task.id} 已存在完全一致的交付备注，拒绝重复新增`);
+  }
+  // PUT 入口须回传现有可编辑字段，防止服务端将缺省字段重置。
+  // 不传完成、启动或指派参数；所有业务字段在写后逐项回读校验。
+  return {
+    version: 1,
+    action: 'comment',
+    taskId: String(task.id),
+    taskName: String(task.name || ''),
+    storyId: taskStoryId(task),
+    source,
+    target: { ...source, deliveryComment: options.deliveryComment },
+    operations: [{
+      type: 'task-comment',
+      label: '仅在任务操作记录新增四段交付备注',
+      fields: [{ field: '任务备注', from: '（新增）', to: options.deliveryComment }],
+      data: {
+        ...source.editable,
+        realStarted: source.realStarted,
+        finishedDate: source.finishedDate,
+        comment: options.deliveryComment,
+      },
+    }],
+    blockers,
+  };
+}
+
 function buildPlan(options) {
   const task = getTask(options, options.taskId);
   let plan;
@@ -507,6 +534,10 @@ function buildPlan(options) {
     const storyId = taskStoryId(task);
     const story = storyId ? getStory(options, storyId) : null;
     plan = buildCompletePlan(options, task, story);
+  } else if (options.action === 'comment') {
+    plan = buildCommentPlan(options, task);
+  } else if (options.action === 'restore-start') {
+    plan = buildRestoreStartPlan(options, task);
   } else {
     plan = buildAssignPlan(options, task);
   }
@@ -514,6 +545,33 @@ function buildPlan(options) {
   return {
     ...plan,
     hash: crypto.createHash('sha256').update(hashSource).digest('hex'),
+  };
+}
+
+/** 仅恢复用户确认的开始时间；不执行启动、完成、指派或新增备注。 */
+function buildRestoreStartPlan(options, task) {
+  const source = {
+    ...remoteSnapshot(task),
+    actionsHash: crypto.createHash('sha256').update(JSON.stringify(task.actions || [])).digest('hex'),
+  };
+  const blockers = [];
+  if (source.realStarted) blockers.push('当前实际开始时间已有值，不能使用清空后的恢复入口');
+  if (!Array.isArray(task.actions)) blockers.push('任务操作记录无法回读');
+  return {
+    version: 1,
+    action: 'restore-start',
+    taskId: String(task.id),
+    taskName: String(task.name || ''),
+    storyId: taskStoryId(task),
+    source,
+    target: { ...source, realStarted: options.realStarted },
+    operations: [{
+      type: 'restore-start',
+      label: '恢复被备注更新入口清空的实际开始时间',
+      fields: [{ field: '实际开始时间', from: source.realStarted, to: options.realStarted }],
+      data: { ...source.editable, realStarted: options.realStarted, finishedDate: source.finishedDate },
+    }],
+    blockers,
   };
 }
 
@@ -622,10 +680,27 @@ function applyCompletePlan(options, plan) {
   if (!actionHistoryHasComment(current, plan.target.deliveryComment)) {
     throw new Error(`任务 #${plan.taskId} 已完成，但任务备注回读校验失败：未找到与预览完全一致的四段交付备注。禁止重复执行任务完成操作`);
   }
+  const afterTask = remoteSnapshot(current);
+  const changedTaskFields = Object.keys(plan.source.editable).filter((field) =>
+    JSON.stringify(plan.source.editable[field]) !== JSON.stringify(afterTask.editable[field]));
+  if (changedTaskFields.length) {
+    throw new Error(`任务 #${plan.taskId} 已完成，但业务字段发生非计划变化：${changedTaskFields.join('、')}；未继续写需求备注，禁止重复完成`);
+  }
 
   const storyCommentOperation = plan.operations.find((operation) => operation.type === 'story-comment');
   if (!storyCommentOperation) {
     throw new Error(`任务 #${plan.taskId} 已完成，但计划中缺少需求备注写入动作，禁止重复执行任务完成操作`);
+  }
+
+  const storyBeforeComment = getStory(options, plan.storyId);
+  const beforeStoryFields = storyBusinessSnapshot(storyBeforeComment);
+  // 完成任务可能由禅道自动计算需求阶段；备注操作仍须保持其写入前阶段。
+  const changedBeforeComment = changedStoryFields(plan.source.story.business, beforeStoryFields, ['stage']);
+  if (changedBeforeComment.length) {
+    throw new Error(`任务 #${plan.taskId} 已完成，但需求字段已变化：${changedBeforeComment.join('、')}；未写需求备注，禁止重复完成`);
+  }
+  if (actionHistoryHasComment(storyBeforeComment, plan.target.deliveryComment)) {
+    throw new Error(`任务 #${plan.taskId} 已完成，需求备注已存在；未重复写入，请只读核验`);
   }
 
   try {
@@ -655,6 +730,10 @@ function applyCompletePlan(options, plan) {
   }
   if (!actionHistoryHasComment(story, plan.target.deliveryComment)) {
     throw new Error(`任务 #${plan.taskId} 已完成，但需求 #${plan.storyId} 备注回读校验失败：未找到与预览完全一致的四段交付备注。禁止重复执行任务完成操作`);
+  }
+  const changedAfterComment = changedStoryFields(beforeStoryFields, storyBusinessSnapshot(story));
+  if (changedAfterComment.length) {
+    throw new Error(`任务 #${plan.taskId} 已完成且需求备注已写入，但需求业务字段发生非计划变化：${changedAfterComment.join('、')}；已停止且未重试`);
   }
   return current;
 }
@@ -690,6 +769,28 @@ async function applyAssignPlan(options, plan) {
  * @param {object} plan 当前计划
  * @returns {object} 回读任务
  */
+function applyCommentPlan(options, plan) {
+  let writeError = null;
+  try {
+    cliJson(options, ['task', 'update', plan.taskId,
+      `--data=${JSON.stringify(plan.operations[0].data)}`]);
+  } catch (error) {
+    // 响应异常也须先回读，不自动重试，避免已经成功的备注被重复新增。
+    writeError = error;
+  }
+  const current = getTask(options, plan.taskId);
+  const snapshot = remoteSnapshot(current);
+  const unexpected = unexpectedAssignmentChanges(plan.source, snapshot);
+  if (snapshot.assignedTo !== plan.source.assignedTo) unexpected.push('assignedTo');
+  if (unexpected.length > 0) {
+    throw new Error(`新增备注后发现非计划字段变化：${unexpected.join('、')}；已停止，不会自动恢复或再次写入`);
+  }
+  if (!actionHistoryHasComment(current, plan.target.deliveryComment)) {
+    throw new Error(`任务备注回读未找到与预览完全一致的正文；未自动重试。${writeError ? writeError.message : ''}`);
+  }
+  return current;
+}
+
 async function applyPlan(options, plan) {
   if (plan.hash !== options.planHash) {
     throw new Error(`远端数据或计划已变化，拒绝执行。确认哈希=${options.planHash.slice(0, 12)}，当前哈希=${plan.hash.slice(0, 12)}`);
@@ -701,11 +802,33 @@ async function applyPlan(options, plan) {
   assertSavedPlan(plan);
   const current = plan.action === 'complete'
     ? applyCompletePlan(options, plan)
-    : await applyAssignPlan(options, plan);
+    : plan.action === 'comment'
+      ? applyCommentPlan(options, plan)
+      : plan.action === 'restore-start'
+        ? applyRestoreStartPlan(options, plan)
+        : await applyAssignPlan(options, plan);
 
   const planFile = path.join(PLAN_DIRECTORY, `${plan.hash}.json`);
   if (fs.existsSync(planFile)) {
     fs.unlinkSync(planFile);
+  }
+  return current;
+}
+
+function applyRestoreStartPlan(options, plan) {
+  cliJson(options, ['task', 'update', plan.taskId,
+    `--data=${JSON.stringify(plan.operations[0].data)}`]);
+  const current = getTask(options, plan.taskId);
+  const after = remoteSnapshot(current);
+  const unexpected = unexpectedAssignmentChanges(plan.target, after);
+  if (after.assignedTo !== plan.source.assignedTo) unexpected.push('assignedTo');
+  if (unexpected.length) {
+    throw new Error(`恢复开始时间后发现非计划字段变化：${unexpected.join('、')}；已停止且未重试`);
+  }
+  const actions = current.actions || [];
+  const rawBeforeActionsHash = plan.source.actionsHash;
+  if (!actions.length || crypto.createHash('sha256').update(JSON.stringify(actions)).digest('hex') === rawBeforeActionsHash) {
+    throw new Error('恢复开始时间后未读到对应操作记录，已停止且未重试');
   }
   return current;
 }
@@ -742,7 +865,7 @@ function printPlan(plan, applied, current, asJson) {
   }
 
   console.log(`${applied ? '禅道任务工作流已执行' : '禅道任务工作流预览'}：任务 #${plan.taskId} · ${plan.taskName}`);
-  console.log(`动作：${plan.action === 'complete' ? '完成任务' : '指派已完成任务'}；操作数：${plan.operations.length}；阻断项：${plan.blockers.length}`);
+  console.log(`动作：${plan.action === 'complete' ? '完成任务' : plan.action === 'comment' ? '仅新增任务备注' : plan.action === 'restore-start' ? '恢复开始时间' : '指派已完成任务'}；操作数：${plan.operations.length}；阻断项：${plan.blockers.length}`);
   for (const operation of plan.operations) {
     console.log(`- ${operation.label}`);
     for (const field of operation.fields) {
@@ -758,6 +881,8 @@ function printPlan(plan, applied, current, asJson) {
     if (plan.action === 'complete') {
       console.log(`任务备注回读：任务 #${plan.taskId} 已找到与预览完全一致的四段交付备注`);
       console.log(`需求备注回读：需求 #${plan.storyId} 已找到与预览完全一致的四段交付备注`);
+    } else if (plan.action === 'comment') {
+      console.log('任务备注正文回读一致，状态、工时、指派及业务字段保持不变');
     }
   } else {
     console.log(`计划哈希：${plan.hash}`);
