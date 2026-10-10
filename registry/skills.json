@@ -24,7 +24,7 @@
       "dependencies": ["server-connect"]
     },
     "mysql-search": {
-      "version": "2.1.0",
+      "version": "2.2.0",
       "ownership": "first-party",
       "source": "skills/mysql-search",
       "target": "codex",
@@ -66,11 +66,12 @@
       "dependencies": []
     },
     "vesselhub-problem-analyze": {
-      "version": "2.4.0",
+      "version": "2.4.1",
       "ownership": "first-party",
       "source": "skills/vesselhub-problem-analyze",
       "target": "codex",
-      "dependencies": ["log-search", "mysql-search", "java-backend-code", "weaver", "arms-trace"]
+      "dependencies": ["log-search", "mysql-search", "java-backend-code", "weaver", "arms-trace"],
+      "databaseConnection": "op"
     },
     "zentao-base": {
       "version": "1.0.0",
@@ -80,12 +81,13 @@
       "dependencies": []
     },
     "zentao-debug": {
-      "version": "4.2.0",
+      "version": "4.2.1",
       "ownership": "first-party",
       "source": "skills/zentao-debug",
       "target": "codex",
       "dependencies": ["zentao-base", "vesselhub-problem-analyze", "java-backend-code", "weaver"],
-      "externalDependencies": ["git-branch-delivery"]
+      "externalDependencies": ["git-branch-delivery"],
+      "databaseConnection": "op"
     },
     "zentao-project-manager": {
       "version": "1.2.0",

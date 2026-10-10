@@ -2,11 +2,13 @@
 
 set -euo pipefail
 
+CONNECTION="op"
 ENVIRONMENT=""
 DATABASE_HOST=""
 DATABASE_PORT=""
 DATABASE_USERNAME=""
 SSL_MODE=""
+SSL_CA=""
 DATABASE_NAME=""
 DMS_DATABASE_ID=""
 DMS_LOGIC=""
@@ -16,12 +18,21 @@ ALIYUN_PROFILE=""
 
 usage() {
   printf '%s\n' "用法:"
-  printf '%s\n' "  configure.sh --env <dev|pre> [--host <地址>] [--port <端口>] [--username <只读账号>] [--ssl-mode <模式>]"
-  printf '%s\n' "  configure.sh --env prod [--database <数据库>] [--db-id <DMS数据库ID>] [--logic <true|false>] [--region <地域>] [--tenant-id <DMS租户ID>] [--aliyun-profile <CLI配置名>]"
+  printf '%s\n' "  configure.sh --connection bpm --env prod --database <已登记数据库> [--host <地址>] [--port <端口>] [--username <只读账号>] [--ssl-mode <模式>] [--ssl-ca <CA文件>]"
+  printf '%s\n' "  configure.sh [--connection op] --env <dev|pre> [--host <地址>] [--port <端口>] [--username <只读账号>] [--ssl-mode <模式>]"
+  printf '%s\n' "  configure.sh [--connection op] --env prod [--database <数据库>] [--db-id <DMS数据库ID>] [--logic <true|false>] [--region <地域>] [--tenant-id <DMS租户ID>] [--aliyun-profile <CLI配置名>]"
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --connection)
+      CONNECTION="${2-}"
+      shift 2
+      ;;
+    --ssl-ca)
+      SSL_CA="${2-}"
+      shift 2
+      ;;
     --env)
       ENVIRONMENT="${2-}"
       shift 2
@@ -95,19 +106,35 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 4
 fi
 
+SCRIPT_DIRECTORY="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+CONNECTION_POLICY="${SCRIPT_DIRECTORY}/connections.py"
+if ! command -v python3 >/dev/null 2>&1 || [[ ! -f "$CONNECTION_POLICY" ]]; then
+  printf '%s\n' "配置需要 python3 和 connections.py" >&2
+  exit 4
+fi
+if ! CONNECTION_IDENTITY="$(python3 "$CONNECTION_POLICY" identity --connection "$CONNECTION" --env "$ENVIRONMENT")"; then
+  exit 4
+fi
+CONNECTION="$(printf '%s' "$CONNECTION_IDENTITY" | jq -er '.connection')"
+TRANSPORT="$(printf '%s' "$CONNECTION_IDENTITY" | jq -er '.transport')"
 CONFIG_BASE="${XDG_CONFIG_HOME:-$HOME/.config}"
-CONFIG_DIRECTORY="${CONFIG_BASE}/fangzhikun-skills/mysql-search"
+CONFIG_ROOT="${CONFIG_BASE}/fangzhikun-skills/mysql-search"
+CONFIG_DIRECTORY="${CONFIG_ROOT}/connections/${CONNECTION}"
 CONFIG_FILE="${CONFIG_DIRECTORY}/${ENVIRONMENT}.json"
+READ_CONFIG_FILE="$CONFIG_FILE"
+if [[ ! -f "$READ_CONFIG_FILE" && "$CONNECTION" == "op" ]]; then
+  READ_CONFIG_FILE="${CONFIG_ROOT}/${ENVIRONMENT}.json"
+fi
 
-# 生产环境只登记 DMS 路由信息。阿里云凭据继续由 CLI 官方配置管理，不写入本文件。
-if [[ "$ENVIRONMENT" == "prod" ]]; then
+# OP prod 独立登记 DMS；不存在生产通道回退。
+if [[ "$TRANSPORT" == "dms" ]]; then
   DATABASES_JSON='{}'
 
-  if [[ -f "$CONFIG_FILE" ]] && jq -e '.transport == "dms" and (.databases | type == "object")' "$CONFIG_FILE" >/dev/null 2>&1; then
-    DATABASES_JSON="$(jq -c '.databases' "$CONFIG_FILE")"
-    DMS_REGION="${DMS_REGION:-$(jq -r '.region // empty' "$CONFIG_FILE")}"
-    DMS_TENANT_ID="${DMS_TENANT_ID:-$(jq -r '.tenantId // empty' "$CONFIG_FILE")}"
-    ALIYUN_PROFILE="${ALIYUN_PROFILE:-$(jq -r '.aliyunProfile // empty' "$CONFIG_FILE")}"
+  if [[ -f "$READ_CONFIG_FILE" ]] && jq -e '.transport == "dms" and (.databases | type == "object")' "$READ_CONFIG_FILE" >/dev/null 2>&1; then
+    DATABASES_JSON="$(jq -c '.databases' "$READ_CONFIG_FILE")"
+    DMS_REGION="${DMS_REGION:-$(jq -r '.region // empty' "$READ_CONFIG_FILE")}"
+    DMS_TENANT_ID="${DMS_TENANT_ID:-$(jq -r '.tenantId // empty' "$READ_CONFIG_FILE")}"
+    ALIYUN_PROFILE="${ALIYUN_PROFILE:-$(jq -r '.aliyunProfile // empty' "$READ_CONFIG_FILE")}"
   fi
 
   if [[ -z "$DATABASE_NAME" ]]; then
@@ -179,6 +206,7 @@ if [[ "$ENVIRONMENT" == "prod" ]]; then
 
   jq -n \
     --arg environment "$ENVIRONMENT" \
+    --arg connection "$CONNECTION" \
     --arg transport "dms" \
     --arg region "$DMS_REGION" \
     --arg tenantId "$DMS_TENANT_ID" \
@@ -188,6 +216,7 @@ if [[ "$ENVIRONMENT" == "prod" ]]; then
     --argjson logic "$DMS_LOGIC" \
     --argjson databases "$DATABASES_JSON" \
     '{
+      schemaVersion: 1, connection: $connection, displayName: "OP数据库连接", enabled: true,
       environment: $environment,
       transport: $transport,
       region: $region,
@@ -206,7 +235,34 @@ if [[ "$ENVIRONMENT" == "prod" ]]; then
   exit 0
 fi
 
-# dev 和 pre 继续使用专用 MySQL 只读账号直连。
+# OP dev/pre 与 BPM prod 使用独立的 MySQL 只读凭据。
+OP_DATABASE_SCOPE='{}'
+if [[ "$CONNECTION" == "op" && -f "$READ_CONFIG_FILE" ]]; then
+  if ! OP_DATABASE_SCOPE="$(jq -ce '
+    if has("allowedDatabases") then
+      if (.allowedDatabases | type == "array" and all(.[]; type == "string" and test("^[A-Za-z0-9_]+$")))
+      then {allowedDatabases: .allowedDatabases}
+      else error("invalid database scope") end
+    else {} end
+  ' "$READ_CONFIG_FILE" 2>/dev/null)"; then
+    printf '%s\n' "OP 原数据库白名单无效，禁止配置时丢弃访问限制" >&2
+    exit 4
+  fi
+fi
+if [[ "$CONNECTION" == "bpm" ]]; then
+  if [[ -f "$READ_CONFIG_FILE" ]]; then
+    REGISTERED_DATABASE="$(jq -er '.allowedDatabases | if type == "array" and length == 1 then .[0] else error("database registry invalid") end' "$READ_CONFIG_FILE")"
+    DATABASE_NAME="${DATABASE_NAME:-$REGISTERED_DATABASE}"
+    if [[ "$DATABASE_NAME" != "$REGISTERED_DATABASE" ]]; then
+      printf '%s\n' "BPM 数据库必须与已登记的唯一数据库一致，禁止覆盖" >&2
+      exit 4
+    fi
+  fi
+  if [[ ! "$DATABASE_NAME" =~ ^[A-Za-z0-9_]+$ ]]; then
+    printf '%s\n' "BPM 首次配置必须通过 --database 明确数据库名" >&2
+    exit 2
+  fi
+fi
 if [[ -z "$DATABASE_HOST" ]]; then
   read -r -p "请输入 ${ENVIRONMENT} 环境 MySQL Host: " DATABASE_HOST
 fi
@@ -222,6 +278,8 @@ fi
 if [[ -z "$SSL_MODE" ]]; then
   if [[ "$ENVIRONMENT" == "dev" ]]; then
     SSL_MODE="PREFERRED"
+  elif [[ "$CONNECTION" == "bpm" ]]; then
+    SSL_MODE="VERIFY_IDENTITY"
   else
     SSL_MODE="REQUIRED"
   fi
@@ -232,7 +290,7 @@ if [[ ! "$DATABASE_HOST" =~ ^[A-Za-z0-9.-]+$ ]]; then
   exit 2
 fi
 
-if [[ ! "$DATABASE_PORT" =~ ^[0-9]+$ ]] || (( DATABASE_PORT < 1 || DATABASE_PORT > 65535 )); then
+if [[ ! "$DATABASE_PORT" =~ ^[0-9]{1,5}$ ]] || (( 10#$DATABASE_PORT < 1 || 10#$DATABASE_PORT > 65535 )); then
   printf '%s\n' "数据库端口必须在 1 到 65535 之间" >&2
   exit 2
 fi
@@ -251,14 +309,33 @@ if [[ -z "$DATABASE_USERNAME" || "$DATABASE_USERNAME" == *$'\n'* || "$DATABASE_U
   exit 2
 fi
 
+if [[ "$CONNECTION" == "bpm" && "$SSL_MODE" == "PREFERRED" ]]; then
+  printf '%s\n' "BPM 生产连接不允许 TLS 自动降级" >&2
+  exit 2
+fi
+if [[ -n "$SSL_CA" && ( ! -f "$SSL_CA" || "$SSL_CA" == *$'\n'* || "$SSL_CA" == *$'\r'* ) ]]; then
+  printf '%s\n' "--ssl-ca 必须指向有效本机文件" >&2
+  exit 2
+fi
+if [[ "$CONNECTION" == "bpm" && ( "$SSL_MODE" == "VERIFY_CA" || "$SSL_MODE" == "VERIFY_IDENTITY" ) && -z "$SSL_CA" ]]; then
+  printf '%s\n' "BPM 证书验证需要 --ssl-ca；不自动降低验证模式" >&2
+  exit 2
+fi
+DATABASE_PORT="$((10#$DATABASE_PORT))"
+
 if ! command -v security >/dev/null 2>&1; then
   printf '%s\n' "当前系统没有 macOS security 命令，无法安全托管凭据" >&2
   exit 4
 fi
 
-KEYCHAIN_SERVICE="codex.mysql-search.${ENVIRONMENT}"
+if [[ "$CONNECTION" == "bpm" ]]; then
+  KEYCHAIN_SERVICE="codex.mysql-search.bpm.${ENVIRONMENT}"
+else
+  # 兼容 OP 原钥匙串条目，迁移不会要求重新录入密码。
+  KEYCHAIN_SERVICE="codex.mysql-search.${ENVIRONMENT}"
+fi
 
-printf '%s\n' "即将配置 ${ENVIRONMENT}: host=${DATABASE_HOST}, port=${DATABASE_PORT}, user=${DATABASE_USERNAME}, ssl=${SSL_MODE}"
+printf '%s\n' "即将配置 ${CONNECTION}/${ENVIRONMENT}: host=${DATABASE_HOST}, port=${DATABASE_PORT}, user=${DATABASE_USERNAME}, ssl=${SSL_MODE}"
 printf '%s\n' "请在接下来的 macOS 钥匙串提示中输入一次数据库密码。"
 
 # 把 -w 放在最后且不携带参数，让 security 自行安全提示密码，避免密码进入命令行和历史。
@@ -267,7 +344,7 @@ security add-generic-password \
   -s "$KEYCHAIN_SERVICE" \
   -a "$DATABASE_USERNAME" \
   -D "MySQL read-only credential" \
-  -j "Codex mysql-search ${ENVIRONMENT}" \
+  -j "Codex mysql-search ${CONNECTION}/${ENVIRONMENT}" \
   -w
 
 mkdir -p "$CONFIG_DIRECTORY"
@@ -277,13 +354,17 @@ TEMP_CONFIG="$(mktemp "${CONFIG_DIRECTORY}/.${ENVIRONMENT}.XXXXXX")"
 trap 'rm -f "$TEMP_CONFIG"' EXIT
 
 jq -n \
+  --argjson opDatabaseScope "$OP_DATABASE_SCOPE" \
   --arg environment "$ENVIRONMENT" \
+  --arg connection "$CONNECTION" \
+  --arg databaseName "$DATABASE_NAME" \
+  --arg sslCa "$SSL_CA" \
   --arg host "$DATABASE_HOST" \
   --argjson port "$DATABASE_PORT" \
   --arg username "$DATABASE_USERNAME" \
   --arg sslMode "$SSL_MODE" \
   --arg keychainService "$KEYCHAIN_SERVICE" \
-  '{environment: $environment, host: $host, port: $port, username: $username, sslMode: $sslMode, keychainService: $keychainService}' \
+  '{schemaVersion: 1, connection: $connection, displayName: (if $connection == "op" then "OP数据库连接" else "BPM数据库连接" end), environment: $environment, transport: "mysql", enabled: true, configured: true, host: $host, port: $port, username: $username, sslMode: $sslMode, sslCa: $sslCa, keychainService: $keychainService} + (if $connection == "bpm" then {allowedDatabases: [$databaseName]} else $opDatabaseScope end)'  \
   >"$TEMP_CONFIG"
 
 chmod 600 "$TEMP_CONFIG"

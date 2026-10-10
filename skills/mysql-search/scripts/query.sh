@@ -8,6 +8,8 @@ PROD_MAX_ROW_LIMIT="200"
 CONNECT_TIMEOUT_SECONDS="8"
 EXECUTION_TIMEOUT_MILLISECONDS="15000"
 
+CONNECTION="op"
+CONNECTION_EXPLICIT="false"
 ENVIRONMENT=""
 DATABASE_NAME=""
 SQL_TEXT=""
@@ -15,11 +17,16 @@ ROW_LIMIT="$DEFAULT_ROW_LIMIT"
 OUTPUT_FORMAT="tsv"
 
 usage() {
-  printf '%s\n' "用法: query.sh --env <dev|pre|prod> --database <数据库> --sql <单条只读SQL> [--limit <行数>] [--format <tsv|table>]"
+  printf '%s\n' "用法: query.sh [--connection <op|bpm>] --env <dev|pre|prod> --database <数据库> --sql <单条只读SQL> [--limit <行数>] [--format <tsv|table>]"
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --connection)
+      CONNECTION="${2-}"
+      CONNECTION_EXPLICIT="true"
+      shift 2
+      ;;
     --env)
       ENVIRONMENT="${2-}"
       shift 2
@@ -99,36 +106,51 @@ esac
 # 校验在读取环境配置/凭据和调用任何数据库客户端之前完成。
 SCRIPT_DIRECTORY="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SQL_GUARD="${SCRIPT_DIRECTORY}/sql_guard.py"
-if ! command -v python3 >/dev/null 2>&1 || [[ ! -f "$SQL_GUARD" ]]; then
-  printf '%s\n' "查询需要 python3 和 scripts/sql_guard.py，缺失时禁止执行" >&2
+CONNECTION_POLICY="${SCRIPT_DIRECTORY}/connections.py"
+if ! command -v python3 >/dev/null 2>&1 || [[ ! -f "$SQL_GUARD" || ! -f "$CONNECTION_POLICY" ]]; then
+  printf '%s\n' "查询需要 python3、sql_guard.py 和 connections.py，缺失时禁止执行" >&2
   exit 4
 fi
 if ! command -v jq >/dev/null 2>&1; then
   printf '%s\n' "查询需要 jq 命令" >&2
   exit 4
 fi
+if ! CONNECTION_IDENTITY="$(python3 "$CONNECTION_POLICY" identity --connection "$CONNECTION" --env "$ENVIRONMENT")"; then
+  exit 4
+fi
+CONNECTION="$(printf '%s' "$CONNECTION_IDENTITY" | jq -er '.connection')"
+if [[ "$CONNECTION" == "bpm" && ! -f "${SCRIPT_DIRECTORY}/mysql_readonly.py" ]]; then
+  printf '%s\n' "缺少 BPM 只读会话执行器，禁止执行" >&2
+  exit 4
+fi
+
 if ! QUERY_PLAN="$(printf '%s' "$SQL_TEXT" | python3 "$SQL_GUARD" --database "$DATABASE_NAME" --limit "$ROW_LIMIT")"; then
   exit 3
 fi
 SQL_TEXT="$(printf '%s' "$QUERY_PLAN" | jq -er '.sql')"
 METADATA_SQL="$(printf '%s' "$QUERY_PLAN" | jq -r '.metadata_sql')"
 
-CONFIG_BASE="${XDG_CONFIG_HOME:-$HOME/.config}"
-CONFIG_FILE="${CONFIG_BASE}/fangzhikun-skills/mysql-search/${ENVIRONMENT}.json"
-if [[ ! -f "$CONFIG_FILE" ]]; then
-  printf '%s\n' "缺少 ${ENVIRONMENT} 环境配置，请先运行 scripts/configure.sh --env ${ENVIRONMENT}" >&2
+RESOLVE_ARGUMENTS=(resolve --connection "$CONNECTION" --env "$ENVIRONMENT" --database "$DATABASE_NAME")
+if [[ "$CONNECTION_EXPLICIT" == "false" ]]; then
+  RESOLVE_ARGUMENTS+=(--implicit-op)
+fi
+if ! CONNECTION_ROUTE="$(python3 "$CONNECTION_POLICY" "${RESOLVE_ARGUMENTS[@]}")"; then
   exit 4
 fi
+CONFIG_FILE="$(printf '%s' "$CONNECTION_ROUTE" | jq -er '.configFile')"
+TRANSPORT="$(printf '%s' "$CONNECTION_ROUTE" | jq -er '.transport')"
+CONNECTION_NAME="$(printf '%s' "$CONNECTION_ROUTE" | jq -er '.displayName')"
+printf '查询目标：%s | env=%s | database=%s | transport=%s\n' "$CONNECTION_NAME" "$ENVIRONMENT" "$DATABASE_NAME" "$TRANSPORT" >&2
 
-# 生产环境只通过阿里云 DMS 查询，不再读取或尝试旧的 MySQL 直连账号。
-if [[ "$ENVIRONMENT" == "prod" ]]; then
+# 通道绑定连接+环境；OP prod 始终 DMS，BPM prod 始终 MySQL。
+if [[ "$TRANSPORT" == "dms" ]]; then
   if ! command -v aliyun >/dev/null 2>&1; then
     printf '%s\n' "未找到阿里云 CLI，请阅读 references/setup.md" >&2
     exit 4
   fi
 
   if [[ "$(jq -r '.transport // empty' "$CONFIG_FILE")" != "dms" ]]; then
-    printf '%s\n' "prod 配置不是 DMS 格式，请重新运行 scripts/configure.sh --env prod" >&2
+    printf '%s\n' "prod 配置不是 DMS 格式，请重新运行 scripts/configure.sh --connection op --env prod" >&2
     exit 4
   fi
 
@@ -139,7 +161,7 @@ if [[ "$ENVIRONMENT" == "prod" ]]; then
     and (.databases[$database_name].dbId | tostring | test("^[0-9]+$"))
     and (.databases[$database_name].logic | type == "boolean")
   ' "$CONFIG_FILE" >/dev/null 2>&1; then
-    printf '%s\n' "prod 未配置数据库 ${DATABASE_NAME} 的有效 DMS 路由，请先运行 scripts/configure.sh --env prod" >&2
+    printf '%s\n' "prod 未配置数据库 ${DATABASE_NAME} 的有效 DMS 路由，请先运行 scripts/configure.sh --connection op --env prod" >&2
     exit 4
   fi
 
@@ -152,7 +174,7 @@ if [[ "$ENVIRONMENT" == "prod" ]]; then
   if [[ ! "$DMS_REGION" =~ ^[A-Za-z0-9-]+$ ]] \
     || [[ ! "$ALIYUN_PROFILE" =~ ^[A-Za-z0-9_.@-]+$ ]] \
     || [[ "$DMS_LOGIC" != "true" && "$DMS_LOGIC" != "false" ]]; then
-    printf '%s\n' "prod DMS 配置格式不合法，请重新运行 scripts/configure.sh --env prod" >&2
+    printf '%s\n' "prod DMS 配置格式不合法，请重新运行 scripts/configure.sh --connection op --env prod" >&2
     exit 4
   fi
 
@@ -181,30 +203,30 @@ if [[ "$ENVIRONMENT" == "prod" ]]; then
       printf '%s\n' "DMS 查询调用失败，请检查阿里云 CLI 身份、网络及 dms:ExecuteScript 权限" >&2
       exit 5
     fi
-  
+
     if ! jq -e 'type == "object"' "$DMS_RESPONSE_FILE" >/dev/null 2>&1; then
       printf '%s\n' "DMS 返回了无法识别的结果格式" >&2
       exit 5
     fi
-  
+
     if [[ "$(jq -r '.Success // false' "$DMS_RESPONSE_FILE")" != "true" ]]; then
       DMS_ERROR_CODE="$(jq -r '.ErrorCode // "UNKNOWN"' "$DMS_RESPONSE_FILE")"
       DMS_REQUEST_ID="$(jq -r '.RequestId // "UNKNOWN"' "$DMS_RESPONSE_FILE")"
       printf 'DMS 查询失败：errorCode=%s, requestId=%s\n' "$DMS_ERROR_CODE" "$DMS_REQUEST_ID" >&2
       exit 5
     fi
-  
+
     DMS_RESULT_COUNT="$(jq '[.Results // [] | if type == "array" then .[] elif type == "object" and has("Result") then .Result[] else empty end] | length' "$DMS_RESPONSE_FILE")"
     if [[ "$DMS_RESULT_COUNT" != "1" ]]; then
       printf '%s\n' "DMS 返回结果数量异常，已拒绝输出" >&2
       exit 5
     fi
-  
+
     if [[ "$(jq -r '(.Results // [] | if type == "array" then .[0] elif type == "object" and has("Result") then .Result[0] else {} end).Success // false' "$DMS_RESPONSE_FILE")" != "true" ]]; then
       printf '%s\n' "DMS 未能执行只读 SQL，请检查 SQL、DMS 数据库权限和安全规则" >&2
       exit 5
     fi
-  
+
     DMS_RETURNED_ROWS="$(jq '(.Results // [] | if type == "array" then .[0] elif type == "object" and has("Result") then .Result[0] else {} end).Rows // [] | length' "$DMS_RESPONSE_FILE")"
     DMS_DECLARED_ROW_COUNT="$(jq -r '(.Results // [] | if type == "array" then .[0] elif type == "object" and has("Result") then .Result[0] else {} end).RowCount // 0' "$DMS_RESPONSE_FILE")"
     if [[ ! "$DMS_DECLARED_ROW_COUNT" =~ ^[0-9]+$ ]] \
@@ -255,7 +277,7 @@ if [[ "$ENVIRONMENT" == "prod" ]]; then
 fi
 
 if ! command -v security >/dev/null 2>&1; then
-  printf '%s\n' "dev/pre 查询需要 macOS security 命令" >&2
+  printf '%s\n' "MySQL 直连需要 macOS security 命令" >&2
   exit 4
 fi
 
@@ -277,19 +299,20 @@ DATABASE_PORT="$(jq -er '.port' "$CONFIG_FILE")"
 DATABASE_USERNAME="$(jq -er '.username' "$CONFIG_FILE")"
 SSL_MODE="$(jq -er '.sslMode' "$CONFIG_FILE")"
 KEYCHAIN_SERVICE="$(jq -er '.keychainService' "$CONFIG_FILE")"
+SSL_CA="$(jq -r '.sslCa // empty' "$CONFIG_FILE")"
 
 if [[ ! "$DATABASE_HOST" =~ ^[A-Za-z0-9.-]+$ ]] \
   || [[ ! "$DATABASE_PORT" =~ ^[0-9]{1,5}$ ]] \
   || (( 10#$DATABASE_PORT < 1 || 10#$DATABASE_PORT > 65535 )) \
   || [[ "$SSL_MODE" != "PREFERRED" && "$SSL_MODE" != "REQUIRED" && "$SSL_MODE" != "VERIFY_CA" && "$SSL_MODE" != "VERIFY_IDENTITY" ]] \
   || [[ "$DATABASE_USERNAME" == *$'\n'* || "$DATABASE_USERNAME" == *$'\r'* ]]; then
-  printf '%s\n' "dev/pre 连接配置不合法，禁止执行" >&2
+  printf '%s\n' "MySQL 直连配置不合法，禁止执行" >&2
   exit 4
 fi
 
 DATABASE_PASSWORD="$(security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$DATABASE_USERNAME" -w 2>/dev/null || true)"
 if [[ -z "$DATABASE_PASSWORD" ]]; then
-  printf '%s\n' "未找到 ${ENVIRONMENT} 环境钥匙串凭据，请重新运行 scripts/configure.sh --env ${ENVIRONMENT}" >&2
+  printf '%s\n' "未找到 ${ENVIRONMENT} 环境钥匙串凭据，请重新运行 scripts/configure.sh --connection ${CONNECTION} --env ${ENVIRONMENT}" >&2
   exit 4
 fi
 
@@ -321,6 +344,9 @@ umask 077
   printf 'port=%s\n' "$DATABASE_PORT"
   printf 'database="%s"\n' "$(escape_option_value "$DATABASE_NAME")"
   printf 'ssl-mode=%s\n' "$SSL_MODE"
+  if [[ -n "$SSL_CA" ]]; then
+    printf 'ssl-ca="%s"\n' "$(escape_option_value "$SSL_CA")"
+  fi
   printf '%s\n' 'default-character-set=utf8mb4'
 } >"$OPTION_FILE"
 chmod 600 "$OPTION_FILE"
@@ -336,7 +362,19 @@ MYSQL_ARGUMENTS=(
   "--raw"
   "--binary-mode"
   "--local-infile=0"
+  "--skip-reconnect"
+  "--skip-force"
 )
+
+if [[ "$CONNECTION" == "bpm" ]]; then
+  if [[ ! -f "${SCRIPT_DIRECTORY}/mysql_readonly.py" ]]; then
+    printf '%s\n' "缺少 BPM 只读会话执行器，禁止执行" >&2
+    exit 4
+  fi
+  python3 "${SCRIPT_DIRECTORY}/mysql_readonly.py" --mysql-bin "$MYSQL_BIN" --option-file "$OPTION_FILE" \
+    --database "$DATABASE_NAME" --limit "$ROW_LIMIT" --format "$OUTPUT_FORMAT" --plan "$QUERY_PLAN"
+  exit "$?"
+fi
 
 if [[ "$OUTPUT_FORMAT" == "table" ]]; then
   MYSQL_ARGUMENTS+=("--table")

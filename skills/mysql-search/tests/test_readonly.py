@@ -135,7 +135,7 @@ class TransportTests(unittest.TestCase):
         bin_dir = self.base / "bin"
         bin_dir.mkdir()
         # Isolate PATH entirely: no real DB clients or Keychain binaries can run.
-        for command in ("bash", "python3", "jq", "dirname", "mktemp", "rm", "rmdir", "chmod"):
+        for command in ("bash", "python3", "jq", "dirname", "mktemp", "mkdir", "mv", "rm", "rmdir", "chmod"):
             (bin_dir / command).symlink_to(shutil.which(command))
         for client in ("mysql", "aliyun", "security"):
             target = bin_dir / client

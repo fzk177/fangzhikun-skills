@@ -1,7 +1,7 @@
 ---
 name: vesselhub-problem-analyze
 description: 显式调用 $vesselhub-problem-analyze，或由 $zentao-debug 进入通用问题分析阶段时，围绕经营系统问题分析 VesselHub 及相关服务代码，必要时联动 $log-search、$mysql-search、$arms-trace，涉及泛微审批流时可按需调用 $weaver 补充只读证据；生产环境代码分析统一使用各服务仓库的 origin/pre。
-version: 2.4.0
+version: 2.4.1
 ---
 
 # 经营系统问题分析
@@ -10,6 +10,7 @@ version: 2.4.0
 
 - 仅在用户显式调用 `$vesselhub-problem-analyze`、明确要求使用本 Skill，或显式调用的 `$zentao-debug` 进入通用问题分析阶段时启用。
 - 默认只分析问题并给出证据、结论、影响和建议，不修改前端、后端、配置、数据库、日志或远程服务。排查阶段前端代码始终只读；用户明确要求修复时，先确认修改范围，修改 Java 后端代码前完整读取 [$java-backend-code](../java-backend-code/SKILL.md)。
+- 数据库证据固定使用 OP数据库连接（`--connection op`）：dev/pre 直连、prod DMS。调用 `$mysql-search` 时明确传递 OP 和已确认环境；不因 BPM/审批关键词、空结果或连接失败改用 BPM。泛微 API 仍遵守 `$weaver` 的独立环境与只读规则。
 - 日志查询和数据库查询始终只读。需要补充证据时，分别遵守 `$log-search` 和 `$mysql-search` 的全部安全边界，不借辅助排查执行运维、写入或配置变更。
 - 需要验证跨服务调用、错误 Span、慢调用、TraceID 传播或已采集的请求／响应信息时，可以按需调用 `$arms-trace` 内部只读子流程，无需用户再次显式调用。遵守其全部环境、身份、查询范围和脱敏边界，仅使用允许的只读接口或已登录控制台读取，不修改采样、探针、应用、权限或本机配置。
 - 涉及泛微审批流且有必要补充泛微证据时，可以按需调用 `$weaver` 内部只读子流程，无需用户再次显式调用。泛微查询始终只读，不修改流程、节点、操作者、表单、权限或推进审批；代码修复授权不能扩大泛微权限。
@@ -80,7 +81,7 @@ python3 "$HOME/.codex/obsidian-sync/bin/vesselhub_experience.py" search --env '<
 
 调用日志查询前，完整读取 [$log-search](../log-search/SKILL.md)，将它作为内部只读子流程，并传入已确认的环境、北京时间范围、应用或服务以及稳定线索。日志无结果只能说明当前查询范围未命中，不能直接证明请求未执行或问题未发生。
 
-调用数据库查询前，完整读取 [$mysql-search](../mysql-search/SKILL.md)，将它作为内部只读子流程，并传入已确认的环境、数据库、表字段、业务条件和待验证假设。数据库空结果只代表当前环境和条件未命中，不能直接证明业务数据不存在。
+调用数据库查询前，完整读取 [$mysql-search](../mysql-search/SKILL.md)，将它作为内部只读子流程，并明确传入 `--connection op`、已确认的环境、数据库、表字段、业务条件和待验证假设。数据库空结果只代表当前环境和条件未命中，不能直接证明业务数据不存在。
 
 调用 ARMS 链路查询前，完整读取 [$arms-trace](../arms-trace/SKILL.md)，按其规则读取查询所需的直接引用文档和本机非秘密应用清单。将它作为内部只读子流程，传入已确认的环境、北京时间范围、服务／接口、TraceID（如有）、稳定线索和待验证假设；复用已确认的地域、账号与 CLI profile 映射或已登录控制台，缺项必须补齐后再查询，不猜测或跨账号、地域、环境盲查。
 
