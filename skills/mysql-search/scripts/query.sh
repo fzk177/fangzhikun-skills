@@ -375,7 +375,7 @@ if [[ "$CONNECTION" == "bpm" ]]; then
   if [[ "$SSL_MODE" == "DISABLED" ]]; then
     BPM_ARGUMENTS+=(--allow-unencrypted)
   fi
-  python3 "${SCRIPT_DIRECTORY}/mysql_readonly.py" "${BPM_ARGUMENTS[@]}"
+  python3 -B "${SCRIPT_DIRECTORY}/mysql_readonly.py" "${BPM_ARGUMENTS[@]}"
   exit "$?"
 fi
 

@@ -14,6 +14,8 @@ import uuid
 import json
 import os
 
+# Runtime queries must not create files inside a managed Skill installation.
+sys.dont_write_bytecode = True
 from sql_guard import Rejected, validate, verify_tables
 
 
