@@ -1,7 +1,7 @@
 interface:
   display_name: "经营系统问题分析"
-  short_description: "结合代码、日志和数据库证据排查经营系统问题"
-  default_prompt: "使用 $vesselhub-problem-analyze 分析指定环境的经营系统问题；需要时调用只读日志和数据库查询，涉及泛微审批流时按需调用 $weaver 只读查询补充证据。泛微排查遇到非只读或未核实接口时拒绝请求并报告限制。"
+  short_description: "结合代码、日志、数据库和 ARMS 链路证据排查经营系统问题"
+  default_prompt: "使用 $vesselhub-problem-analyze 分析指定环境的经营系统问题；需要时调用只读日志和数据库查询，按需调用 $arms-trace 验证跨服务路径、异常和耗时，涉及泛微审批流时按需调用 $weaver 只读查询补充证据。泛微排查遇到非只读或未核实接口时拒绝请求并报告限制。"
 
 policy:
   allow_implicit_invocation: false

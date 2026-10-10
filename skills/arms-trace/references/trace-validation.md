@@ -15,9 +15,33 @@
 
 4. 不执行带占位符的命令。每次显式传入 `--profile`、`--region`、`--RegionId`，两个地域值一致，并启用 `set -o pipefail`，检查 CLI 与过滤程序退出码。
 5. `--force` 仅跳过本机 API 元数据校验，不绕过 RAM 权限；只用于本 Skill 允许的两个只读接口。不安装插件、不升级 CLI、不修改配置，不以其他产品同名接口替代本次请求。
-6. CLI 返回和标准错误在内存中处理，成功内容先经 jq 收窄；失败只提取必要错误码、RequestId、AuthAction 和拒绝类型。必要时输出供管理员核对的非秘密身份标识；不输出 EncodedDiagnosticMessage、完整响应头或任何签名及凭据。
+6. CLI 返回和标准错误在内存中处理，成功内容先经 jq 收窄；失败只提取必要错误码、RequestId、AuthAction、拒绝类型及脱敏错误摘要。必要时输出供管理员核对的非秘密身份标识；不输出 EncodedDiagnosticMessage、完整响应头或任何签名及凭据。
 
 依据：[官方强制调用说明](https://help.aliyun.com/zh/cli/force-call-apis)、[官方地域 Endpoint](https://help.aliyun.com/zh/opentelemetry/developer-reference/api-xtrace-2019-08-08-endpoint)、[CLI 3.4.11 命令分发源码](https://github.com/aliyun/aliyun-cli/blob/v3.4.11/openapi/commando.go)、[CLI 请求版本设置源码](https://github.com/aliyun/aliyun-cli/blob/v3.4.11/openapi/invoker.go)。其他 CLI 版本遇到不同行为时重新核对，不机械套用旧结论。
+
+## 服务名筛选失败的处理路径
+
+已观察到同一地域和身份下：`SearchTraces --ServiceName <应用名>` 返回 `40404 / ServiceName不存在`，但按已知 TraceID 的 `GetTrace` 能返回该应用的 Span；省略 `ServiceName`、按精确接口与窄时间搜索，也能返回同一样本。具体原因尚未查明，不推断为应用已删除、账号错误、权限不足或某种固定索引机制，也不推广到所有应用。
+
+1. 记录错误码、脱敏错误摘要、时间窗口与筛选条件；真实应用、profile 和请求标识只存本机验证资料。核对拼写及已有应用映射，不尝试相似服务名、应用 ID、其他环境、账号或地域。
+2. 有已知 TraceID 时，用同一身份和地域读 `GetTrace`，确认返回服务与实际时间。已知成功样本可验证读取能力，不能替代目标故障请求。
+3. 已有精确接口／Span 名、明确环境映射和窄时间时，省略可选 `ServiceName`，仅改用 `OperationName`；生产首次最多 15 分钟、单页最多 20 条。没有接口线索时，保留阻塞并补充线索或在已登录控制台读取，不做整个账号的无条件列表查询。
+4. 将列表返回的服务与本机已确认映射比较。其他服务候选不读详情；服务环境无法区分时先补齐证据。符合范围的候选再读详情，用已采集参数或业务证据核对目标实例；服务、接口、时间相近本身不证明属于同一故障。
+5. 可用已知样本的接口和三分钟窗口核验列表是否返回同一 TraceID；成功后将本机查询方式登记为“按 OperationName 查询已验证，ServiceName 筛选失败”。后续同一已确认映射优先复用此方式；身份、地域变化或恢复超过 5 小时时按主文档重新核验。仍失败时保留错误，不扩大身份或接口权限；空结果不代表请求未发生。
+
+查询形态如下；占位值必须来自已确认材料，CLI 元数据兼容参数按前节补充。标准错误仍须在内存中收窄：
+
+```bash
+set -o pipefail
+aliyun xtrace SearchTraces \
+  --RegionId '<地域ID>' --StartTime '<起始毫秒>' --EndTime '<结束毫秒>' \
+  --OperationName '<已知精确接口或Span名>' \
+  --PageNumber 1 --PageSize 20 --Reverse true \
+  --region '<地域ID>' --profile '<已确认CLI profile>' \
+  | jq '.PageBean as $p | {RequestId, TotalCount: $p.TotalCount, PageNumber: $p.PageNumber, TraceInfos: (($p.TraceInfos.TraceInfo // [] | if type == "array" then . elif type == "object" then [.] else [] end) | map({TraceID, ServiceName, OperationName, Duration, Timestamp, StatusCode}))}'
+```
+
+依据：[SearchTraces 官方参数](https://help.aliyun.com/zh/opentelemetry/developer-reference/api-xtrace-2019-08-08-searchtraces)将 `ServiceName` 与 `OperationName` 列为可选筛选条件；上述错误与成功路径来自实际只读核验，具体应用及证据不进入公开源码。
 
 ## ReadOnly 与实际鉴权
 
