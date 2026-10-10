@@ -1,5 +1,9 @@
 # 数据库查询首次配置
 
+## 查询入口依赖
+
+查询需要 Bash、Python 3 和 jq。`scripts/sql_guard.py` 仅使用 Python 标准库，无需安装第三方 SQL 解析库。依赖或校验器缺失时脚本拒绝执行，不使用直接客户端绕过。
+
 ## dev 和 pre
 
 `dev/pre` 使用 MySQL 8.0 客户端和专用只读账号。本机 Homebrew 安装命令为：
@@ -43,7 +47,7 @@ Skill 只读取 CLI profile 名并传给 `aliyun` 命令，不读取、复制或
 
 执行身份至少需要调用 DMS `ExecuteScript` 的 RAM 权限，并且该身份必须已加入正确的 DMS 租户、拥有目标生产数据库的查询权限。DMS 数据库权限应只授予查询和必要的元数据查看能力，不授予变更数据、结构设计、数据导出或权限管理能力。
 
-阿里云 DMS 的 `ExecuteScript` 接口本身可能支持 DDL 和 DML。包装脚本会在调用前只放行 `SELECT`、`SHOW`、`DESC/DESCRIBE`、`EXPLAIN`，但客户端校验不能替代 DMS 侧的最小权限和安全规则。
+阿里云 DMS 的 `ExecuteScript` 接口本身支持 DQL、DDL 和 DML。包装脚本会在调用前完整解析只读 SQL 子集、限制内置函数并核验引用表，但客户端校验不能替代 DMS 侧的最小权限和安全规则。生产查询必须使用服务端只读身份；脚本不会授予权限，也不能仅凭本地 profile 名确认权限。尤其元数据核验和业务查询是两次调用，不能将它们视为同一只读事务。详见 [readonly-policy.md](readonly-policy.md)。
 
 ### 登记数据库路由
 

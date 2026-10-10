@@ -96,63 +96,22 @@ case "$OUTPUT_FORMAT" in
     ;;
 esac
 
-# 允许一个结尾分号，但拒绝多语句、注释以及可能改变状态或读取服务器文件的 SELECT 变体。
-SQL_TEXT="$(printf '%s' "$SQL_TEXT" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/;[[:space:]]*$//')"
-
-if [[ -z "$SQL_TEXT" || "$SQL_TEXT" == *";"* ]]; then
-  printf '%s\n' "只允许执行一条 SQL" >&2
-  exit 3
+# 校验在读取环境配置/凭据和调用任何数据库客户端之前完成。
+SCRIPT_DIRECTORY="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SQL_GUARD="${SCRIPT_DIRECTORY}/sql_guard.py"
+if ! command -v python3 >/dev/null 2>&1 || [[ ! -f "$SQL_GUARD" ]]; then
+  printf '%s\n' "查询需要 python3 和 scripts/sql_guard.py，缺失时禁止执行" >&2
+  exit 4
 fi
-
-if [[ "$SQL_TEXT" =~ --[[:space:]] || "$SQL_TEXT" == *"/*"* || "$SQL_TEXT" == *"*/"* || "$SQL_TEXT" == *"#"* ]]; then
-  printf '%s\n' "SQL 中不允许注释" >&2
-  exit 3
-fi
-
-FIRST_KEYWORD="$(printf '%s' "$SQL_TEXT" | awk '{print toupper($1); exit}')"
-case "$FIRST_KEYWORD" in
-  SELECT|SHOW|DESC|DESCRIBE|EXPLAIN)
-    ;;
-  *)
-    printf '%s\n' "只允许 SELECT、SHOW、DESC/DESCRIBE 或 EXPLAIN" >&2
-    exit 3
-    ;;
-esac
-
-UPPER_SQL="$(printf '%s' "$SQL_TEXT" | tr '[:lower:]' '[:upper:]')"
-if [[ "$UPPER_SQL" =~ INTO[[:space:]]+(OUTFILE|DUMPFILE) ]] \
-  || [[ "$UPPER_SQL" =~ FOR[[:space:]]+UPDATE ]] \
-  || [[ "$UPPER_SQL" =~ FOR[[:space:]]+SHARE ]] \
-  || [[ "$UPPER_SQL" =~ LOCK[[:space:]]+IN[[:space:]]+SHARE[[:space:]]+MODE ]] \
-  || [[ "$UPPER_SQL" =~ ^EXPLAIN[[:space:]]+ANALYZE ]] \
-  || [[ "$UPPER_SQL" =~ (GET_LOCK|RELEASE_LOCK|SLEEP|BENCHMARK|LOAD_FILE)[[:space:]]*\( ]]; then
-  printf '%s\n' "SQL 包含被禁止的文件、锁定或资源消耗操作" >&2
-  exit 3
-fi
-
-# DMS 不提供客户端侧的 select-limit。生产 SELECT 没有结尾 LIMIT 时自动补齐，已有 LIMIT 则校验返回上限。
-if [[ "$ENVIRONMENT" == "prod" && "$FIRST_KEYWORD" == "SELECT" ]]; then
-  SELECT_ROW_LIMIT=""
-
-  if [[ "$UPPER_SQL" =~ LIMIT[[:space:]]+([0-9]+)[[:space:]]*,[[:space:]]*([0-9]+)$ ]]; then
-    SELECT_ROW_LIMIT="${BASH_REMATCH[2]}"
-  elif [[ "$UPPER_SQL" =~ LIMIT[[:space:]]+([0-9]+)([[:space:]]+OFFSET[[:space:]]+[0-9]+)?$ ]]; then
-    SELECT_ROW_LIMIT="${BASH_REMATCH[1]}"
-  else
-    SQL_TEXT="${SQL_TEXT} LIMIT ${ROW_LIMIT}"
-  fi
-
-  if [[ -n "$SELECT_ROW_LIMIT" ]] \
-    && { [[ "${#SELECT_ROW_LIMIT}" -gt 3 ]] || (( 10#$SELECT_ROW_LIMIT > ROW_LIMIT )); }; then
-    printf '%s\n' "生产环境 SELECT 的结尾 LIMIT 不能超过 ${ROW_LIMIT}" >&2
-    exit 3
-  fi
-fi
-
 if ! command -v jq >/dev/null 2>&1; then
   printf '%s\n' "查询需要 jq 命令" >&2
   exit 4
 fi
+if ! QUERY_PLAN="$(printf '%s' "$SQL_TEXT" | python3 "$SQL_GUARD" --database "$DATABASE_NAME" --limit "$ROW_LIMIT")"; then
+  exit 3
+fi
+SQL_TEXT="$(printf '%s' "$QUERY_PLAN" | jq -er '.sql')"
+METADATA_SQL="$(printf '%s' "$QUERY_PLAN" | jq -r '.metadata_sql')"
 
 CONFIG_BASE="${XDG_CONFIG_HOME:-$HOME/.config}"
 CONFIG_FILE="${CONFIG_BASE}/fangzhikun-skills/mysql-search/${ENVIRONMENT}.json"
@@ -208,49 +167,63 @@ if [[ "$ENVIRONMENT" == "prod" ]]; then
   trap cleanup_dms_files EXIT
   umask 077
 
-  if ! aliyun dms-enterprise ExecuteScript \
-    --region "$DMS_REGION" \
-    --profile "$ALIYUN_PROFILE" \
-    --DbId "$DMS_DATABASE_ID" \
-    --Logic "$DMS_LOGIC" \
-    --Script "$SQL_TEXT" \
-    --Tid "$DMS_TENANT_ID" \
-    >"$DMS_RESPONSE_FILE" 2>"$DMS_ERROR_FILE"; then
-    printf '%s\n' "DMS 查询调用失败，请检查阿里云 CLI 身份、网络及 dms:ExecuteScript 权限" >&2
-    exit 5
-  fi
+  execute_dms() {
+    local DMS_SQL="$1"
+    local DMS_ROW_LIMIT="$2"
+    if ! aliyun dms-enterprise ExecuteScript \
+      --region "$DMS_REGION" \
+      --profile "$ALIYUN_PROFILE" \
+      --DbId "$DMS_DATABASE_ID" \
+      --Logic "$DMS_LOGIC" \
+      --Script "$DMS_SQL" \
+      --Tid "$DMS_TENANT_ID" \
+      >"$DMS_RESPONSE_FILE" 2>"$DMS_ERROR_FILE"; then
+      printf '%s\n' "DMS 查询调用失败，请检查阿里云 CLI 身份、网络及 dms:ExecuteScript 权限" >&2
+      exit 5
+    fi
+  
+    if ! jq -e 'type == "object"' "$DMS_RESPONSE_FILE" >/dev/null 2>&1; then
+      printf '%s\n' "DMS 返回了无法识别的结果格式" >&2
+      exit 5
+    fi
+  
+    if [[ "$(jq -r '.Success // false' "$DMS_RESPONSE_FILE")" != "true" ]]; then
+      DMS_ERROR_CODE="$(jq -r '.ErrorCode // "UNKNOWN"' "$DMS_RESPONSE_FILE")"
+      DMS_REQUEST_ID="$(jq -r '.RequestId // "UNKNOWN"' "$DMS_RESPONSE_FILE")"
+      printf 'DMS 查询失败：errorCode=%s, requestId=%s\n' "$DMS_ERROR_CODE" "$DMS_REQUEST_ID" >&2
+      exit 5
+    fi
+  
+    DMS_RESULT_COUNT="$(jq '[.Results // [] | if type == "array" then .[] elif type == "object" and has("Result") then .Result[] else empty end] | length' "$DMS_RESPONSE_FILE")"
+    if [[ "$DMS_RESULT_COUNT" != "1" ]]; then
+      printf '%s\n' "DMS 返回结果数量异常，已拒绝输出" >&2
+      exit 5
+    fi
+  
+    if [[ "$(jq -r '(.Results // [] | if type == "array" then .[0] elif type == "object" and has("Result") then .Result[0] else {} end).Success // false' "$DMS_RESPONSE_FILE")" != "true" ]]; then
+      printf '%s\n' "DMS 未能执行只读 SQL，请检查 SQL、DMS 数据库权限和安全规则" >&2
+      exit 5
+    fi
+  
+    DMS_RETURNED_ROWS="$(jq '(.Results // [] | if type == "array" then .[0] elif type == "object" and has("Result") then .Result[0] else {} end).Rows // [] | length' "$DMS_RESPONSE_FILE")"
+    DMS_DECLARED_ROW_COUNT="$(jq -r '(.Results // [] | if type == "array" then .[0] elif type == "object" and has("Result") then .Result[0] else {} end).RowCount // 0' "$DMS_RESPONSE_FILE")"
+    if [[ ! "$DMS_DECLARED_ROW_COUNT" =~ ^[0-9]+$ ]] \
+      || [[ "${#DMS_DECLARED_ROW_COUNT}" -gt 3 ]] \
+      || (( DMS_RETURNED_ROWS > DMS_ROW_LIMIT || 10#$DMS_DECLARED_ROW_COUNT > DMS_ROW_LIMIT )); then
+      printf '%s\n' "DMS 返回行数超过 ${DMS_ROW_LIMIT}，已拒绝输出" >&2
+      exit 5
+    fi
+  }
 
-  if ! jq -e 'type == "object"' "$DMS_RESPONSE_FILE" >/dev/null 2>&1; then
-    printf '%s\n' "DMS 返回了无法识别的结果格式" >&2
-    exit 5
+  # 元数据查询由校验器根据解析出的表名生成，不接受用户替换。
+  # 无法确认基础表/原生引擎时停止，禁止通过视图隐藏函数副作用。
+  if [[ -n "$METADATA_SQL" ]]; then
+    execute_dms "$METADATA_SQL" 65
+    if ! python3 "$SQL_GUARD" --verify dms --plan "$QUERY_PLAN" <"$DMS_RESPONSE_FILE"; then
+      exit 3
+    fi
   fi
-
-  if [[ "$(jq -r '.Success // false' "$DMS_RESPONSE_FILE")" != "true" ]]; then
-    DMS_ERROR_CODE="$(jq -r '.ErrorCode // "UNKNOWN"' "$DMS_RESPONSE_FILE")"
-    DMS_REQUEST_ID="$(jq -r '.RequestId // "UNKNOWN"' "$DMS_RESPONSE_FILE")"
-    printf 'DMS 查询失败：errorCode=%s, requestId=%s\n' "$DMS_ERROR_CODE" "$DMS_REQUEST_ID" >&2
-    exit 5
-  fi
-
-  DMS_RESULT_COUNT="$(jq '[.Results // [] | if type == "array" then .[] elif type == "object" and has("Result") then .Result[] else empty end] | length' "$DMS_RESPONSE_FILE")"
-  if [[ "$DMS_RESULT_COUNT" != "1" ]]; then
-    printf '%s\n' "DMS 返回结果数量异常，已拒绝输出" >&2
-    exit 5
-  fi
-
-  if [[ "$(jq -r '(.Results // [] | if type == "array" then .[0] elif type == "object" and has("Result") then .Result[0] else {} end).Success // false' "$DMS_RESPONSE_FILE")" != "true" ]]; then
-    printf '%s\n' "DMS 未能执行只读 SQL，请检查 SQL、DMS 数据库权限和安全规则" >&2
-    exit 5
-  fi
-
-  DMS_RETURNED_ROWS="$(jq '(.Results // [] | if type == "array" then .[0] elif type == "object" and has("Result") then .Result[0] else {} end).Rows // [] | length' "$DMS_RESPONSE_FILE")"
-  DMS_DECLARED_ROW_COUNT="$(jq -r '(.Results // [] | if type == "array" then .[0] elif type == "object" and has("Result") then .Result[0] else {} end).RowCount // 0' "$DMS_RESPONSE_FILE")"
-  if [[ ! "$DMS_DECLARED_ROW_COUNT" =~ ^[0-9]+$ ]] \
-    || [[ "${#DMS_DECLARED_ROW_COUNT}" -gt 3 ]] \
-    || (( DMS_RETURNED_ROWS > ROW_LIMIT || 10#$DMS_DECLARED_ROW_COUNT > ROW_LIMIT )); then
-    printf '%s\n' "DMS 返回行数超过 ${ROW_LIMIT}，已拒绝输出" >&2
-    exit 5
-  fi
+  execute_dms "$SQL_TEXT" "$ROW_LIMIT"
 
   render_dms_tsv() {
     jq -r '
@@ -305,6 +278,15 @@ DATABASE_USERNAME="$(jq -er '.username' "$CONFIG_FILE")"
 SSL_MODE="$(jq -er '.sslMode' "$CONFIG_FILE")"
 KEYCHAIN_SERVICE="$(jq -er '.keychainService' "$CONFIG_FILE")"
 
+if [[ ! "$DATABASE_HOST" =~ ^[A-Za-z0-9.-]+$ ]] \
+  || [[ ! "$DATABASE_PORT" =~ ^[0-9]{1,5}$ ]] \
+  || (( 10#$DATABASE_PORT < 1 || 10#$DATABASE_PORT > 65535 )) \
+  || [[ "$SSL_MODE" != "PREFERRED" && "$SSL_MODE" != "REQUIRED" && "$SSL_MODE" != "VERIFY_CA" && "$SSL_MODE" != "VERIFY_IDENTITY" ]] \
+  || [[ "$DATABASE_USERNAME" == *$'\n'* || "$DATABASE_USERNAME" == *$'\r'* ]]; then
+  printf '%s\n' "dev/pre 连接配置不合法，禁止执行" >&2
+  exit 4
+fi
+
 DATABASE_PASSWORD="$(security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$DATABASE_USERNAME" -w 2>/dev/null || true)"
 if [[ -z "$DATABASE_PASSWORD" ]]; then
   printf '%s\n' "未找到 ${ENVIRONMENT} 环境钥匙串凭据，请重新运行 scripts/configure.sh --env ${ENVIRONMENT}" >&2
@@ -315,6 +297,9 @@ escape_option_value() {
   local option_value="$1"
   option_value="${option_value//\\/\\\\}"
   option_value="${option_value//\"/\\\"}"
+  option_value="${option_value//$'\n'/\\n}"
+  option_value="${option_value//$'\r'/\\r}"
+  option_value="${option_value//$'\t'/\\t}"
   printf '%s' "$option_value"
 }
 
@@ -342,12 +327,15 @@ chmod 600 "$OPTION_FILE"
 unset DATABASE_PASSWORD
 
 MYSQL_ARGUMENTS=(
-  "--defaults-extra-file=${OPTION_FILE}"
+  "--defaults-file=${OPTION_FILE}"
+  "--no-login-paths"
   "--connect-timeout=${CONNECT_TIMEOUT_SECONDS}"
-  "--init-command=SET SESSION MAX_EXECUTION_TIME=${EXECUTION_TIMEOUT_MILLISECONDS}"
+  "--init-command=SET SESSION MAX_EXECUTION_TIME=${EXECUTION_TIMEOUT_MILLISECONDS}, transaction_read_only=ON"
   "--safe-updates"
   "--select-limit=${ROW_LIMIT}"
   "--raw"
+  "--binary-mode"
+  "--local-infile=0"
 )
 
 if [[ "$OUTPUT_FORMAT" == "table" ]]; then
@@ -356,4 +344,13 @@ else
   MYSQL_ARGUMENTS+=("--batch")
 fi
 
+if [[ -n "$METADATA_SQL" ]]; then
+  if ! METADATA_ROWS="$("$MYSQL_BIN" "${MYSQL_ARGUMENTS[@]}" --skip-table --batch --skip-column-names --execute="START TRANSACTION READ ONLY; ${METADATA_SQL}; ROLLBACK")"; then
+    printf '%s\n' "目标表元数据核验失败，禁止执行查询" >&2
+    exit 5
+  fi
+  if ! printf '%s' "$METADATA_ROWS" | python3 "$SQL_GUARD" --verify tsv --plan "$QUERY_PLAN"; then
+    exit 3
+  fi
+fi
 "$MYSQL_BIN" "${MYSQL_ARGUMENTS[@]}" --execute="START TRANSACTION READ ONLY; ${SQL_TEXT}; ROLLBACK"

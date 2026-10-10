@@ -23,4 +23,5 @@
 
 - `prod` 默认和最大返回 200 行；必须使用明确过滤条件，元数据排查也应限定 schema 或表名。生产 `SELECT` 由包装脚本强制控制结尾 `LIMIT`，DMS 返回后还会校验实际行数。
 - `dev/pre` 默认返回 200 行，确有需要可提高到 500 行。
+- 所有环境的 SELECT 都由完整语法校验器补齐或校验 LIMIT；未知语法或函数一律拒绝。业务查询前必须能读取目标表在 `information_schema.TABLES` 中的元数据；视图、外部引擎或元数据无法核验时停止，不绕过入口。支持的查询子集和生产并发 DDL 边界见 [readonly-policy.md](readonly-policy.md)。
 - 每次查询必须通过 `--database` 明确指定 schema。`prod` 只接受已登记且完全匹配的数据库名；需要访问其他 schema 时先单独登记 DMS DbId，并确认它属于当前租户、生产环境和任务范围。不要在 SQL 中静默跨库。
