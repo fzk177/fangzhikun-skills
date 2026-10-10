@@ -16,11 +16,13 @@
 
 校验器收集完整查询（含 JOIN、子查询和 UNION）的所有表引用。脚本生成并执行定向 `information_schema.TABLES` 元数据查询，逐一校验 schema、表名、类型和引擎；缺失或不匹配即停止。仅允许目标数据库的 BASE TABLE，且引擎为 InnoDB、MyISAM、MEMORY、CSV 或 ARCHIVE；禁止业务视图、FEDERATED 和未知引擎，防止视图隐藏函数副作用或访问外部系统。MySQL 自带 `information_schema` 对象单独允许。标识符须使用元数据中的实际拼写，不猜测或跨业务库查询。
 
-OP dev/pre 和 BPM prod 额外设置 `transaction_read_only=ON`，执行固定的 `START TRANSACTION READ ONLY; <已校验SQL>; ROLLBACK`。客户端仅读取临时 option 文件，禁用 login paths、本地文件导入和客户端命令；密码/配置值中的换行不会成为 option 指令。
+OP dev/pre 和 BPM prod 额外设置 `transaction_read_only=ON`，执行固定的 `START TRANSACTION READ ONLY; <已校验SQL>; ROLLBACK`。客户端仅读取临时 option 文件，使用 MYSQL_TEST_LOGIN_FILE=/dev/null 隔离 login paths，禁用本地文件导入和客户端命令；密码/配置值中的换行不会成为 option 指令。
 
 BPM prod 使用单一 MySQL 5.7.20+/8.0 会话：开启只读事务后核验版本、实际数据库、会话只读状态，核验目标表，再发送业务 SQL。客户端禁止自动重连和出错后继续，结果超过 200 行或 8 MiB 时不输出；异常关闭会话，正常回滚后输出。单独调用执行器时仍重新校验 SQL，并拒绝 option 文件中的额外客户端指令。
 
 OP prod 仍仅使用 DMS ExecuteScript。元数据和业务查询分别调用，结果数量/行数异常时拒绝输出，不尝试直连或其他环境。结果行数校验不是执行前的只读保障。
+
+MySQL 8.0 的客户端不支持 --no-login-paths；通过官方支持的 MYSQL_TEST_LOGIN_FILE 指向空设备，避免隐式读取 .mylogin.cnf。独立 BPM 执行器也主动设置该环境，不继承调用方的真实登录配置。见 [官方登录配置说明](https://dev.mysql.com/doc/refman/8.0/en/mysql-config-editor.html)。
 
 ## 固定会话控制与读写账号
 

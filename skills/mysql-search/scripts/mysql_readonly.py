@@ -12,6 +12,7 @@ import threading
 import time
 import uuid
 import json
+import os
 
 from sql_guard import Rejected, validate, verify_tables
 
@@ -49,7 +50,10 @@ def check_option_file(path, database, allow_unencrypted=False):
 
 class Session:
     def __init__(self, command):
-        self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # MySQL 8.0 has no --no-login-paths. Its supported environment override
+        # isolates the implicit .mylogin.cnf without reading real login paths.
+        environment = {**os.environ, "MYSQL_TEST_LOGIN_FILE": os.devnull}
+        self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment)
         self.lines = queue.Queue(maxsize=512)
         self.failed = threading.Event()
         self.closed = threading.Event()
@@ -135,7 +139,7 @@ def execute(mysql_bin, option_file, database, limit, supplied_plan, allow_unencr
     # Re-validate even if this helper is invoked directly with a forged plan.
     plan = validate(supplied_plan["sql"], database, limit)
     check_option_file(option_file, database, allow_unencrypted)
-    command = [mysql_bin, "--defaults-file=" + str(option_file), "--no-login-paths", "--connect-timeout=8",
+    command = [mysql_bin, "--defaults-file=" + str(option_file), "--connect-timeout=8",
                "--init-command=SET SESSION MAX_EXECUTION_TIME=15000, transaction_read_only=ON",
                "--binary-mode", "--local-infile=0", "--skip-reconnect", "--skip-force",
                "--batch", "--unbuffered", "--skip-auto-rehash", "--column-names"]
@@ -208,7 +212,11 @@ def main():
     except Rejected:
         print("BPM SQL/表对象只读校验失败，拒绝执行", file=sys.stderr)
         return 3
-    except (QueryFailure, OSError, ValueError, KeyError, TypeError, UnicodeError, subprocess.TimeoutExpired):
+    except QueryFailure as error:
+        # These messages are fixed strings authored here, never raw diagnostics.
+        print("BPM MySQL 只读会话失败：" + str(error), file=sys.stderr)
+        return 5
+    except (OSError, ValueError, KeyError, TypeError, UnicodeError, subprocess.TimeoutExpired):
         print("BPM MySQL 只读会话失败；未自动重连、切换连接或输出原始错误", file=sys.stderr)
         return 5
     return 0

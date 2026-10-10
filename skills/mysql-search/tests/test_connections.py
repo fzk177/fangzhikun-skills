@@ -21,7 +21,7 @@ args = sys.argv[1:]
 def record(item):
     with open(os.environ['AUDIT_LOG'],'a') as f:
         f.write(json.dumps(item)+'\\n')
-record({'client':'mysql','args':args})
+record({'client':'mysql','args':args,'login_file':os.environ.get('MYSQL_TEST_LOGIN_FILE')})
 database = os.environ.get('AUDIT_DATABASE','bpm_database')
 for line in sys.stdin:
     sql = line.strip()
@@ -150,6 +150,8 @@ class ConnectionTests(unittest.TestCase):
         mysql=next(c for c in calls if c["client"]=="mysql")
         for flag in ("--binary-mode","--local-infile=0","--skip-reconnect","--skip-force"):
             self.assertIn(flag,mysql["args"])
+        self.assertNotIn("--no-login-paths", mysql["args"])
+        self.assertEqual(mysql["login_file"], "/dev/null")
         sql=[c["sql"] for c in calls if c["client"]=="mysql-stdin"]
         self.assertTrue(sql[0].startswith("START TRANSACTION READ ONLY;"))
         metadata=next(i for i,s in enumerate(sql) if "information_schema.TABLES WHERE" in s)

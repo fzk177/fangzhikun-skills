@@ -354,7 +354,6 @@ unset DATABASE_PASSWORD
 
 MYSQL_ARGUMENTS=(
   "--defaults-file=${OPTION_FILE}"
-  "--no-login-paths"
   "--connect-timeout=${CONNECT_TIMEOUT_SECONDS}"
   "--init-command=SET SESSION MAX_EXECUTION_TIME=${EXECUTION_TIMEOUT_MILLISECONDS}, transaction_read_only=ON"
   "--safe-updates"
@@ -387,7 +386,7 @@ else
 fi
 
 if [[ -n "$METADATA_SQL" ]]; then
-  if ! METADATA_ROWS="$("$MYSQL_BIN" "${MYSQL_ARGUMENTS[@]}" --skip-table --batch --skip-column-names --execute="START TRANSACTION READ ONLY; ${METADATA_SQL}; ROLLBACK")"; then
+  if ! METADATA_ROWS="$(MYSQL_TEST_LOGIN_FILE=/dev/null "$MYSQL_BIN" "${MYSQL_ARGUMENTS[@]}" --skip-table --batch --skip-column-names --execute="START TRANSACTION READ ONLY; ${METADATA_SQL}; ROLLBACK")"; then
     printf '%s\n' "目标表元数据核验失败，禁止执行查询" >&2
     exit 5
   fi
@@ -395,4 +394,4 @@ if [[ -n "$METADATA_SQL" ]]; then
     exit 3
   fi
 fi
-"$MYSQL_BIN" "${MYSQL_ARGUMENTS[@]}" --execute="START TRANSACTION READ ONLY; ${SQL_TEXT}; ROLLBACK"
+MYSQL_TEST_LOGIN_FILE=/dev/null "$MYSQL_BIN" "${MYSQL_ARGUMENTS[@]}" --execute="START TRANSACTION READ ONLY; ${SQL_TEXT}; ROLLBACK"

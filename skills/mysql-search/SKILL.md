@@ -2,7 +2,7 @@
 name: mysql-search
 description: 显式调用 $mysql-search，或由注册表中已声明依赖它的问题分析 Skill 按需进入数据库证据补全流程时，对 OP 数据库连接（dev/pre 直连、prod DMS）和 BPM 数据库连接（仅 prod 直连）执行受脚本强制限制的只读查询并分析结果；不执行写入、DDL、锁定、存储过程或权限变更。
 metadata:
-  version: "2.3.0"
+  version: "2.3.1"
 ---
 
 # 数据库只读查询

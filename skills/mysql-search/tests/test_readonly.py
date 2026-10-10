@@ -107,7 +107,7 @@ from pathlib import Path
 name = Path(sys.argv[0]).name
 args = sys.argv[1:]
 with open(os.environ['AUDIT_LOG'], 'a') as f:
-    f.write(json.dumps({'client': name, 'args': args}) + '\\n')
+    f.write(json.dumps({'client': name, 'args': args, 'login_file': os.environ.get('MYSQL_TEST_LOGIN_FILE')}) + '\\n')
 if name == 'security':
     print('offline-test-password')
     sys.exit(0)
@@ -186,7 +186,8 @@ class TransportTests(unittest.TestCase):
                         args = call["args"]
                         self.assertIn("--binary-mode", args)
                         self.assertIn("--local-infile=0", args)
-                        self.assertIn("--no-login-paths", args)
+                        self.assertNotIn("--no-login-paths", args)
+                        self.assertEqual(call["login_file"], "/dev/null")
                         self.assertTrue(args[0].startswith("--defaults-file="))
                         self.assertIn("transaction_read_only=ON", " ".join(args))
                         self.assertIn("START TRANSACTION READ ONLY;", " ".join(args))
