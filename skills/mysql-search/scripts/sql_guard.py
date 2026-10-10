@@ -16,7 +16,7 @@ class Rejected(ValueError):
     pass
 
 
-# MySQL 8.0 native functions only. Never accept quoted/qualified function names.
+# MySQL 5.7.20+/8.0 shared native functions only; no quoted/qualified names.
 # Additions require checking native availability and absence of side effects.
 FUNCTIONS = set("""
 ABS CEIL CEILING FLOOR ROUND TRUNCATE MOD POW POWER SQRT SIGN

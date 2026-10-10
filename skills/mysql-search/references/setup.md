@@ -35,13 +35,13 @@ bash "${CODEX_HOME:-$HOME/.codex}/skills/mysql-search/scripts/configure.sh" \
   --ssl-ca '<本机CA证书路径>'
 ```
 
-Host、端口、用户名未传入时逐项输入；密码只由 macOS 钥匙串在本机提示录入，不进入聊天、命令参数、历史或 JSON 文件。不要读取项目中的账号密码。BPM 使用专用只读账号，权限限定目标库 SELECT 与必要元数据查看，不授予 EXECUTE、FILE 或管理权限。
+Host、端口、用户名未传入时逐项输入；密码只由 macOS 钥匙串在本机提示录入，不进入聊天、命令参数、历史或 JSON 文件。不要读取项目中的账号密码。BPM 默认使用专用只读账号，权限限定目标库 SELECT 与必要元数据查看，不授予 EXECUTE、FILE 或管理权限。用户明确选择已有读写账号时，仍由同一查询入口强制限制 SQL、表对象和只读会话；先说明账号权限未被降低、脚本外的连接不受这些限制。配置不会创建账号或修改权限。
 
-BPM 默认 VERIFY_IDENTITY，必须提供 ssl-ca；证书失败不自动降低验证等级。如果实际条件要求仅强制 TLS 加密，需配置时明确传入 --ssl-mode REQUIRED；禁止 PREFERRED。OP dev/pre 保持原 TLS 默认值，证书模式可额外指定 --ssl-ca。
+BPM 默认 VERIFY_IDENTITY，必须提供 ssl-ca；证书失败不自动降低验证等级。如果实际条件要求仅强制 TLS 加密，需配置时明确传入 --ssl-mode REQUIRED；禁止 PREFERRED。只有用户明确选择 BPM 无 TLS 直连时，才同时传入 --ssl-mode DISABLED --allow-unencrypted，配置会额外保存 allowUnencrypted=true；查询入口和独立执行器均核对这一显式选择。该模式下 SQL 和结果不经 TLS 加密，认证取决于实际插件，不改变任何只读限制。不得因 TLS 失败自动改用此模式。OP dev/pre 保持原 TLS 默认值，证书模式可额外指定 --ssl-ca。
 
 新配置保存为权限 600 的连接/环境 JSON，密码仍在钥匙串；OP 复用原服务名，BPM 使用 codex.mysql-search.bpm.prod。配置命令会启用该配置，但不会查询数据库。
 
-BPM 查询执行器核验实际 MySQL 8.0 版本、实际数据库和会话只读状态，核验失败停止；不能将其他版本或兼容产品自动视为已支持。
+BPM 查询执行器核验实际 MySQL 5.7.20+ 或 8.0 版本、实际数据库和会话只读状态，核验失败停止；不能将其他版本或兼容产品自动视为已支持。5.7.20 以下停止；固定使用 transaction_read_only，不尝试旧变量或重连回退。服务器不支持的查询语法（例如 5.7 上的 EXPLAIN FORMAT=TREE）会失败并停止，不绕过校验。
 
 ## OP prod：DMS
 

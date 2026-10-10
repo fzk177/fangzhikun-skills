@@ -9,6 +9,7 @@ DATABASE_PORT=""
 DATABASE_USERNAME=""
 SSL_MODE=""
 SSL_CA=""
+ALLOW_UNENCRYPTED="false"
 DATABASE_NAME=""
 DMS_DATABASE_ID=""
 DMS_LOGIC=""
@@ -19,12 +20,17 @@ ALIYUN_PROFILE=""
 usage() {
   printf '%s\n' "用法:"
   printf '%s\n' "  configure.sh --connection bpm --env prod --database <已登记数据库> [--host <地址>] [--port <端口>] [--username <只读账号>] [--ssl-mode <模式>] [--ssl-ca <CA文件>]"
+  printf '%s\n' "  BPM 无 TLS 必须同时明确指定 --ssl-mode DISABLED --allow-unencrypted；不自动降级"
   printf '%s\n' "  configure.sh [--connection op] --env <dev|pre> [--host <地址>] [--port <端口>] [--username <只读账号>] [--ssl-mode <模式>]"
   printf '%s\n' "  configure.sh [--connection op] --env prod [--database <数据库>] [--db-id <DMS数据库ID>] [--logic <true|false>] [--region <地域>] [--tenant-id <DMS租户ID>] [--aliyun-profile <CLI配置名>]"
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --allow-unencrypted)
+      ALLOW_UNENCRYPTED="true"
+      shift
+      ;;
     --connection)
       CONNECTION="${2-}"
       shift 2
@@ -296,10 +302,10 @@ if [[ ! "$DATABASE_PORT" =~ ^[0-9]{1,5}$ ]] || (( 10#$DATABASE_PORT < 1 || 10#$D
 fi
 
 case "$SSL_MODE" in
-  PREFERRED|REQUIRED|VERIFY_CA|VERIFY_IDENTITY)
+  DISABLED|PREFERRED|REQUIRED|VERIFY_CA|VERIFY_IDENTITY)
     ;;
   *)
-    printf '%s\n' "SSL 模式只支持 PREFERRED、REQUIRED、VERIFY_CA 或 VERIFY_IDENTITY" >&2
+    printf '%s\n' "SSL 模式无效；BPM 的 DISABLED 还需要明确传入 --allow-unencrypted" >&2
     exit 2
     ;;
 esac
@@ -312,6 +318,12 @@ fi
 if [[ "$CONNECTION" == "bpm" && "$SSL_MODE" == "PREFERRED" ]]; then
   printf '%s\n' "BPM 生产连接不允许 TLS 自动降级" >&2
   exit 2
+fi
+if [[ "$SSL_MODE" == "DISABLED" || "$ALLOW_UNENCRYPTED" == "true" ]]; then
+  if [[ "$CONNECTION" != "bpm" || "$SSL_MODE" != "DISABLED" || "$ALLOW_UNENCRYPTED" != "true" ]]; then
+    printf '%s\n' "无 TLS 仅允许 BPM 同时明确指定 --ssl-mode DISABLED --allow-unencrypted" >&2
+    exit 2
+  fi
 fi
 if [[ -n "$SSL_CA" && ( ! -f "$SSL_CA" || "$SSL_CA" == *$'\n'* || "$SSL_CA" == *$'\r'* ) ]]; then
   printf '%s\n' "--ssl-ca 必须指向有效本机文件" >&2
@@ -355,6 +367,7 @@ trap 'rm -f "$TEMP_CONFIG"' EXIT
 
 jq -n \
   --argjson opDatabaseScope "$OP_DATABASE_SCOPE" \
+  --argjson allowUnencrypted "$ALLOW_UNENCRYPTED" \
   --arg environment "$ENVIRONMENT" \
   --arg connection "$CONNECTION" \
   --arg databaseName "$DATABASE_NAME" \
@@ -364,7 +377,7 @@ jq -n \
   --arg username "$DATABASE_USERNAME" \
   --arg sslMode "$SSL_MODE" \
   --arg keychainService "$KEYCHAIN_SERVICE" \
-  '{schemaVersion: 1, connection: $connection, displayName: (if $connection == "op" then "OP数据库连接" else "BPM数据库连接" end), environment: $environment, transport: "mysql", enabled: true, configured: true, host: $host, port: $port, username: $username, sslMode: $sslMode, sslCa: $sslCa, keychainService: $keychainService} + (if $connection == "bpm" then {allowedDatabases: [$databaseName]} else $opDatabaseScope end)'  \
+  '{schemaVersion: 1, connection: $connection, displayName: (if $connection == "op" then "OP数据库连接" else "BPM数据库连接" end), environment: $environment, transport: "mysql", enabled: true, configured: true, host: $host, port: $port, username: $username, sslMode: $sslMode, sslCa: $sslCa, keychainService: $keychainService} + (if $connection == "bpm" then {allowedDatabases: [$databaseName]} else $opDatabaseScope end) + (if $allowUnencrypted then {allowUnencrypted: true} else {} end)'  \
   >"$TEMP_CONFIG"
 
 chmod 600 "$TEMP_CONFIG"

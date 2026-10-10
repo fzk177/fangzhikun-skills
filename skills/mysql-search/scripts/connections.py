@@ -116,6 +116,8 @@ def resolve(connection, environment, database, implicit_op=False):
             if not isinstance(value, str) or not value or any(ord(c) < 32 for c in value):
                 raise ConfigurationError("MySQL 用户名或钥匙串服务名无效")
         modes = {"PREFERRED", "REQUIRED", "VERIFY_CA", "VERIFY_IDENTITY"}
+        if connection == "bpm" and data.get("allowUnencrypted") is True:
+            modes.add("DISABLED")
         if data.get("sslMode") not in modes or connection == "bpm" and data["sslMode"] == "PREFERRED":
             raise ConfigurationError("TLS 配置无效；BPM 不允许降级为未加密连接")
         if connection == "bpm" and data["keychainService"] != "codex.mysql-search.bpm.prod":

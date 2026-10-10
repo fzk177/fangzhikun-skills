@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""BPM: metadata and business query in one MySQL 8.0 read-only session."""
+"""BPM: one read-only session for MySQL 5.7.20+ or 8.0."""
 
 import argparse
 import configparser
@@ -20,7 +20,16 @@ class QueryFailure(RuntimeError):
     pass
 
 
-def check_option_file(path, database):
+def supported_server_version(version):
+    # 5.7.20 introduced transaction_read_only. Keep the same session controls
+    # on both supported series; older/compatible products never trigger retry.
+    match = re.fullmatch(r"(5\.7|8\.0)\.(\d+)(?:[-+][A-Za-z0-9_.+-]+)?", version)
+    if not match or any(product in version.lower() for product in ("mariadb", "tidb", "oceanbase")):
+        return False
+    return match[1] == "8.0" or int(match[2]) >= 20
+
+
+def check_option_file(path, database, allow_unencrypted=False):
     config = configparser.ConfigParser(interpolation=None)
     try:
         with open(path) as source:
@@ -31,7 +40,10 @@ def check_option_file(path, database):
     if config.sections() != ["client"] or config.defaults() or set(config["client"]) - allowed:
         raise QueryFailure("MySQL option 文件包含未允许的选项")
     values = config["client"]
-    if values.get("database", "").strip('"') != database or values.get("ssl-mode") not in {"REQUIRED", "VERIFY_CA", "VERIFY_IDENTITY"}:
+    modes = {"REQUIRED", "VERIFY_CA", "VERIFY_IDENTITY"}
+    if allow_unencrypted:
+        modes.add("DISABLED")
+    if values.get("database", "").strip('"') != database or values.get("ssl-mode") not in modes:
         raise QueryFailure("MySQL option 数据库或 TLS 设置不一致")
 
 
@@ -119,10 +131,10 @@ class Session:
             stream.close()
 
 
-def execute(mysql_bin, option_file, database, limit, supplied_plan):
+def execute(mysql_bin, option_file, database, limit, supplied_plan, allow_unencrypted=False):
     # Re-validate even if this helper is invoked directly with a forged plan.
     plan = validate(supplied_plan["sql"], database, limit)
-    check_option_file(option_file, database)
+    check_option_file(option_file, database, allow_unencrypted)
     command = [mysql_bin, "--defaults-file=" + str(option_file), "--no-login-paths", "--connect-timeout=8",
                "--init-command=SET SESSION MAX_EXECUTION_TIME=15000, transaction_read_only=ON",
                "--binary-mode", "--local-infile=0", "--skip-reconnect", "--skip-force",
@@ -133,8 +145,8 @@ def execute(mysql_bin, option_file, database, limit, supplied_plan):
         if len(identity) != 2 or identity[0] != "server_version\tdatabase_name\tsession_readonly":
             raise QueryFailure("无法核验 MySQL 版本、数据库和会话只读状态")
         fields = identity[1].split("\t")
-        if len(fields) != 3 or not re.match(r"^8\.0\.", fields[0]) or fields[1] != database or fields[2] != "1":
-            raise QueryFailure("BPM 要求 MySQL 8.0、目标数据库匹配和已启用的只读会话")
+        if len(fields) != 3 or not supported_server_version(fields[0]) or fields[1] != database or fields[2] != "1":
+            raise QueryFailure("BPM 要求 MySQL 5.7.20+ 或 8.0、目标数据库匹配和已启用的只读会话")
         if plan["metadata_sql"]:
             metadata = session.query(plan["metadata_sql"])
             columns = ["TABLE_SCHEMA", "TABLE_NAME", "TABLE_TYPE", "ENGINE"]
@@ -185,11 +197,12 @@ def main():
     cli.add_argument("--limit", type=int, required=True)
     cli.add_argument("--format", choices=("tsv", "table"), default="tsv")
     cli.add_argument("--plan", required=True)
+    cli.add_argument("--allow-unencrypted", action="store_true")
     args = cli.parse_args()
     try:
         if not 1 <= args.limit <= 200:
             raise QueryFailure("BPM 生产查询最多 200 行")
-        lines = execute(args.mysql_bin, args.option_file, args.database, args.limit, json.loads(args.plan))
+        lines = execute(args.mysql_bin, args.option_file, args.database, args.limit, json.loads(args.plan), args.allow_unencrypted)
         if lines:
             print(render_table(lines) if args.format == "table" else "\n".join(lines))
     except Rejected:

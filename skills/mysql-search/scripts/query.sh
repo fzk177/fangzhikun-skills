@@ -304,7 +304,7 @@ SSL_CA="$(jq -r '.sslCa // empty' "$CONFIG_FILE")"
 if [[ ! "$DATABASE_HOST" =~ ^[A-Za-z0-9.-]+$ ]] \
   || [[ ! "$DATABASE_PORT" =~ ^[0-9]{1,5}$ ]] \
   || (( 10#$DATABASE_PORT < 1 || 10#$DATABASE_PORT > 65535 )) \
-  || [[ "$SSL_MODE" != "PREFERRED" && "$SSL_MODE" != "REQUIRED" && "$SSL_MODE" != "VERIFY_CA" && "$SSL_MODE" != "VERIFY_IDENTITY" ]] \
+  || [[ "$SSL_MODE" != "DISABLED" && "$SSL_MODE" != "PREFERRED" && "$SSL_MODE" != "REQUIRED" && "$SSL_MODE" != "VERIFY_CA" && "$SSL_MODE" != "VERIFY_IDENTITY" ]] \
   || [[ "$DATABASE_USERNAME" == *$'\n'* || "$DATABASE_USERNAME" == *$'\r'* ]]; then
   printf '%s\n' "MySQL 直连配置不合法，禁止执行" >&2
   exit 4
@@ -371,8 +371,12 @@ if [[ "$CONNECTION" == "bpm" ]]; then
     printf '%s\n' "缺少 BPM 只读会话执行器，禁止执行" >&2
     exit 4
   fi
-  python3 "${SCRIPT_DIRECTORY}/mysql_readonly.py" --mysql-bin "$MYSQL_BIN" --option-file "$OPTION_FILE" \
-    --database "$DATABASE_NAME" --limit "$ROW_LIMIT" --format "$OUTPUT_FORMAT" --plan "$QUERY_PLAN"
+  BPM_ARGUMENTS=(--mysql-bin "$MYSQL_BIN" --option-file "$OPTION_FILE" --database "$DATABASE_NAME" \
+    --limit "$ROW_LIMIT" --format "$OUTPUT_FORMAT" --plan "$QUERY_PLAN")
+  if [[ "$SSL_MODE" == "DISABLED" ]]; then
+    BPM_ARGUMENTS+=(--allow-unencrypted)
+  fi
+  python3 "${SCRIPT_DIRECTORY}/mysql_readonly.py" "${BPM_ARGUMENTS[@]}"
   exit "$?"
 fi
 

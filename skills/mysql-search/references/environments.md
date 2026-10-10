@@ -7,7 +7,7 @@
 | op | dev | MySQL 8.0 直连 | connections/op/dev.json | 原钥匙串 codex.mysql-search.dev |
 | op | pre | MySQL 8.0 直连 | connections/op/pre.json | 原钥匙串 codex.mysql-search.pre |
 | op | prod | DMS ExecuteScript | connections/op/prod.json | 该连接的阿里云 CLI profile |
-| bpm | prod | MySQL 8.0 直连 | connections/bpm/prod.json | 独立钥匙串 codex.mysql-search.bpm.prod |
+| bpm | prod | MySQL 5.7.20+/8.0 直连（8.0 客户端） | connections/bpm/prod.json | 独立钥匙串 codex.mysql-search.bpm.prod |
 
 配置目录为 `${XDG_CONFIG_HOME:-$HOME/.config}/fangzhikun-skills/mysql-search`。Host、用户名、DMS 路由和实际数据库名称只保存在本机配置，公开源码与文档不保存真实映射。密码仅在钥匙串，阿里云身份由官方 CLI 管理。
 
@@ -24,4 +24,4 @@
 
 生产上限按环境决定：OP prod 和 BPM prod 默认/最大 200 行，OP dev/pre 默认 200、最大 500 行。所有 SELECT 由完整语法校验器补齐或校验 LIMIT，未知语法或函数拒绝。元数据核验仍限定引用表、schema，视图/外部引擎/缺失元数据禁止业务查询。
 
-BPM 在同一 MySQL 8.0 会话中开启只读事务，核验实际库与只读状态，随后核验表和查询，正常结束回滚，失败关闭会话；禁止自动重连。OP 保留现有 MySQL/DMS 执行逻辑。支持子集和 DMS 保障边界见 [readonly-policy.md](readonly-policy.md)。
+BPM 在同一 MySQL 5.7.20+/8.0 会话中开启只读事务，核验实际库与只读状态，随后核验表和查询，正常结束回滚，失败关闭会话；禁止自动重连。OP 保留现有 MySQL/DMS 执行逻辑。BPM 默认校验 TLS 身份；无 TLS 必须由用户明确选择并额外登记 allowUnencrypted=true，不因连接失败自动切换。支持子集和 DMS 保障边界见 [readonly-policy.md](readonly-policy.md)。

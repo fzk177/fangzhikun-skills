@@ -24,7 +24,7 @@
       "dependencies": ["server-connect"]
     },
     "mysql-search": {
-      "version": "2.2.0",
+      "version": "2.3.0",
       "ownership": "first-party",
       "source": "skills/mysql-search",
       "target": "codex",

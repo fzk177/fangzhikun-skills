@@ -119,7 +119,7 @@ class ConnectionTests(unittest.TestCase):
                     self.assertFalse(any("codex.mysql-search.bpm.prod" in c["args"] for c in calls))
 
     def test_pending_disabled_and_wrong_transport_fail_closed(self):
-        for fields in ({"configured":False},{"enabled":False},{"transport":"dms"},{"sslMode":"PREFERRED"},{"keychainService":"codex.mysql-search.dev"},{"environment":"pre"},{"readonly":False}):
+        for fields in ({"configured":False},{"enabled":False},{"transport":"dms"},{"sslMode":"PREFERRED"},{"sslMode":"DISABLED"},{"sslMode":"DISABLED","allowUnencrypted":"true"},{"keychainService":"codex.mysql-search.dev"},{"environment":"pre"},{"readonly":False}):
             with self.subTest(fields=fields):
                 self.write_bpm(**fields)
                 result,calls=self.bpm_query()
@@ -161,12 +161,75 @@ class ConnectionTests(unittest.TestCase):
     def test_invalid_server_identity_stops_before_metadata_and_business(self):
         self.write_bpm()
         self.streaming_mysql()
-        for environment in ({"AUDIT_VERSION":"5.7.44"},{"AUDIT_ACTUAL_DB":"other"},{"AUDIT_READONLY":"0"}):
+        for environment in ({"AUDIT_VERSION":"5.7.19"},{"AUDIT_VERSION":"5.6.51"},{"AUDIT_VERSION":"8.4.1"},{"AUDIT_VERSION":"5.7.44-TiDB"},{"AUDIT_ACTUAL_DB":"other"},{"AUDIT_READONLY":"0"}):
             with self.subTest(environment=environment):
                 result,calls=self.bpm_query(**environment)
                 self.assertEqual(result.returncode,5,result.stderr)
                 self.assertNotIn("SELECT id FROM customers",json.dumps(calls))
                 self.assertNotIn("information_schema.TABLES WHERE",json.dumps(calls))
+
+    def test_supported_mysql_versions_keep_one_readonly_session(self):
+        self.write_bpm()
+        self.streaming_mysql()
+        for version in ("5.7.20", "5.7.44-log", "8.0.36"):
+            with self.subTest(version=version):
+                result, calls = self.bpm_query(AUDIT_VERSION=version)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(sum(c["client"] == "mysql" for c in calls), 1)
+                mysql = next(c for c in calls if c["client"] == "mysql")
+                self.assertIn("--init-command=SET SESSION MAX_EXECUTION_TIME=15000, transaction_read_only=ON", mysql["args"])
+                statements = [c["sql"] for c in calls if c["client"] == "mysql-stdin"]
+                self.assertTrue(statements[0].startswith("START TRANSACTION READ ONLY; SELECT VERSION()"))
+                self.assertIn("ROLLBACK;", statements)
+                for sql in statements[1:]:
+                    self.assertTrue(sql.startswith("SELECT ") or sql == "ROLLBACK;", sql)
+                self.assertEqual(result.stdout, "id\n1\n")
+
+    def test_57_readwrite_credentials_cannot_forward_write_sql(self):
+        self.write_bpm(username="audit_readwrite")
+        self.streaming_mysql()
+        for sql in ("UPDATE customers SET id=2 WHERE id=1", "DELETE FROM customers WHERE id=1", "INSERT INTO customers VALUES(1)", "ALTER TABLE customers ADD name TEXT", "SET GLOBAL read_only=OFF", "SELECT dangerous_function()", "SELECT id FROM customers FOR UPDATE"):
+            with self.subTest(sql=sql):
+                result, calls = self.bpm_query(sql, AUDIT_VERSION="5.7.44-log")
+                self.assertEqual(result.returncode, 3, result.stderr)
+                self.assertEqual(calls, [])
+
+    def test_explicit_unencrypted_bpm_keeps_readonly_policy(self):
+        self.write_bpm(sslMode="DISABLED", allowUnencrypted=True)
+        self.streaming_mysql()
+        result, calls = self.bpm_query(AUDIT_VERSION="5.7.44-log")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        mysql = next(c for c in calls if c["client"] == "mysql")
+        self.assertIn("transaction_read_only=ON", " ".join(mysql["args"]))
+        result, calls = self.bpm_query("UPDATE customers SET id=2 WHERE id=1")
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(calls, [])
+
+    def test_unencrypted_configuration_requires_explicit_bpm_opt_in(self):
+        self.write_bpm(configured=False)
+        args = ["--connection", "bpm", "--env", "prod", "--database", "bpm_database", "--host", "bpm.invalid", "--port", "3306", "--username", "audit", "--ssl-mode", "DISABLED"]
+        result, calls = self.run_cli("configure.sh", args)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, [])
+        result, calls = self.run_cli("configure.sh", [*args, "--allow-unencrypted"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        path = self.base / "config/fangzhikun-skills/mysql-search/connections/bpm/prod.json"
+        self.assertIs(json.loads(path.read_text())["allowUnencrypted"], True)
+        result, calls = self.run_cli("configure.sh", ["--connection", "op", "--env", "dev", "--host", "op.invalid", "--port", "3306", "--username", "audit", "--ssl-mode", "DISABLED", "--allow-unencrypted"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, [])
+
+    def test_direct_executor_rejects_disabled_tls_without_opt_in(self):
+        option_file = self.base / "explicit-client.cnf"
+        option_file.write_text('[client]\ndatabase="bpm_database"\nssl-mode=DISABLED\n')
+        self.streaming_mysql()
+        args = ["--mysql-bin", str(self.base / "bin/mysql"), "--option-file", str(option_file), "--database", "bpm_database", "--limit", "200", "--plan", json.dumps({"sql": "SELECT 1"})]
+        result, calls = self.run_cli("mysql_readonly.py", args)
+        self.assertEqual(result.returncode, 5, result.stderr)
+        self.assertEqual(calls, [])
+        result, calls = self.run_cli("mysql_readonly.py", [*args, "--allow-unencrypted"], AUDIT_VERSION="5.7.44-log")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(sum(c["client"] == "mysql" for c in calls), 1)
 
     def test_unsafe_metadata_stops_before_business_in_same_session(self):
         self.write_bpm()
