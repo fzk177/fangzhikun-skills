@@ -9,8 +9,6 @@ const path = require('path');
 
 const {
   accountValue,
-  assignTask,
-  cliJson,
   defaultOptions,
   editableTaskSnapshot,
   getStory,
@@ -20,6 +18,7 @@ const {
   objectId,
   redactSensitiveText,
 } = require('./zentao_cli');
+const { assignTask, writeCliJson: cliJson } = require('../../zentao-base/scripts/zentao_write');
 
 const PLAN_DIRECTORY = path.join(os.tmpdir(), 'zentao-task-workflow');
 const COMPLETE_REMOTE_STATUSES = new Set(['done', 'closed']);

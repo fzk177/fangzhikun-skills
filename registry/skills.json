@@ -72,12 +72,19 @@
       "target": "codex",
       "dependencies": ["log-search", "mysql-search", "java-backend-code", "weaver", "arms-trace"]
     },
+    "zentao-base": {
+      "version": "1.0.0",
+      "ownership": "first-party",
+      "source": "skills/zentao-base",
+      "target": "codex",
+      "dependencies": []
+    },
     "zentao-debug": {
-      "version": "4.1.0",
+      "version": "4.2.0",
       "ownership": "first-party",
       "source": "skills/zentao-debug",
       "target": "codex",
-      "dependencies": ["vesselhub-problem-analyze", "java-backend-code", "weaver"],
+      "dependencies": ["zentao-base", "vesselhub-problem-analyze", "java-backend-code", "weaver"],
       "externalDependencies": ["git-branch-delivery"]
     },
     "zentao-project-manager": {
@@ -96,11 +103,11 @@
       "externalDependencies": ["weaver-e10-builder"]
     },
     "zentao-task": {
-      "version": "3.2.0",
+      "version": "3.3.0",
       "ownership": "first-party",
       "source": "skills/zentao-task",
       "target": "codex",
-      "dependencies": ["zentao-project-manager", "java-backend-code"],
+      "dependencies": ["zentao-base", "zentao-project-manager", "java-backend-code"],
       "externalDependencies": ["git-branch-delivery"]
     }
   }

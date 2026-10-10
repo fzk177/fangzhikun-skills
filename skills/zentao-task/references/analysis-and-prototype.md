@@ -5,7 +5,7 @@
 ## 只读分析
 
 1. 从用户请求中提取唯一纯数字任务 ID；无法唯一确定时先询问，禁止猜测成项目或迭代 ID。
-2. 执行只读检查：
+2. 完整读取 [$zentao-base](../../zentao-base/SKILL.md) 与其 [认证与查询](../../zentao-base/references/read.md)，再执行使用基础只读客户端的检查：
 
    ```bash
    node "${CODEX_HOME:-$HOME/.codex}/skills/zentao-task/scripts/inspect_zentao_task.js" \

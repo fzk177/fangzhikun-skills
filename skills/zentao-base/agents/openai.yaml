@@ -1,0 +1,6 @@
+interface:
+  display_name: "禅道基础能力"
+  short_description: "共用禅道认证、只读查询、Bug 材料获取与受控写入接口封装"
+  default_prompt: "使用 $zentao-base 只读获取指定类型和 ID 的禅道对象，按需读取历史与附件并报告查询限制。"
+policy:
+  allow_implicit_invocation: false

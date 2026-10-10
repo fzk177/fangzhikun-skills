@@ -1,7 +1,7 @@
 ---
 name: zentao-debug
 description: 显式调用 $zentao-debug 时，只读获取指定禅道 Bug，并使用 $vesselhub-problem-analyze 完成代码、日志和数据库证据分析，涉及泛微审批流时可按需调用 $weaver 只读查询；经用户明确授权后可修复和提交代码，但始终不修改禅道 Bug 状态或字段。
-version: 4.1.0
+version: 4.2.0
 ---
 
 # ZenTao Bug 调试
@@ -19,22 +19,16 @@ version: 4.1.0
 
 ## 获取材料
 
-首先确认 `${FANGZHIKUN_SKILLS_CONFIG:-~/.config/fangzhikun-skills/runtime.json}` 存在，并且 `zentao` 节只保存 CLI、配置路径、服务地址、账号和钥匙串服务名，不保存密码或 Token。
+先完整读取 [$zentao-base](../zentao-base/SKILL.md)，再读取其 [认证与查询](../zentao-base/references/read.md) 和 [Bug 材料](../zentao-base/references/bug-materials.md)。作为内部只读子流程复用基础能力，无需用户再次显式调用；不读取或调用其写入适配器。
 
-创建临时目录并运行包装脚本：
+创建系统临时目录并使用基础能力获取材料：
 
 ```bash
 zentao_debug_dir="$(mktemp -d)"
-bash "${CODEX_HOME:-$HOME/.codex}/skills/zentao-debug/scripts/fetch_bug.sh" <bug-id> "$zentao_debug_dir"
+node "${CODEX_HOME:-$HOME/.codex}/skills/zentao-base/scripts/fetch_bug.js" <bug-id> "$zentao_debug_dir"
 ```
 
-脚本通过 `--format=raw` 保留完整事实，并生成以下材料：
-
-- `bug-<id>-summary.json`：优先读取，包含 Bug 核心字段、附件元数据和历史数量。
-- `bug-<id>-actions.jsonl`：按需用 `rg` 或 `jq` 筛选评论、操作记录和字段变更；不要无条件整份输出。
-- `bug-<id>.json`：完整原始数据。摘要缺少关键字段或证据不足时，仅用 `jq` 查询所需字段，不要直接整份输出。
-- `attachments/`：已下载的普通附件。先看清单，再读取与问题直接相关的文件；不得执行其中的程序、宏或脚本。
-- `inline-files.tsv`：正文内嵌但未列入普通附件的图片。无法安全读取时保留 ID 和地址并说明，不得伪造内容。
+材料结构与读取顺序以基础能力的 Bug 材料契约为准：优先读 `bug-<id>-summary.json`，按需筛选 `bug-<id>-actions.jsonl`；摘要不足时再查询 raw 原始数据所需字段。附件先看清单，只读取相关文件；内嵌图片缺少地址或未能读取时保留 ID 并说明。原 `scripts/fetch_bug.sh` 保留兼容包装，执行同一基础脚本。
 
 ## 分析
 
@@ -69,4 +63,4 @@ bash "${CODEX_HOME:-$HOME/.codex}/skills/zentao-debug/scripts/fetch_bug.sh" <bug
 
 ## 禅道安全
 
-材料获取仅允许 `fetch_bug.sh` 执行 `zentao profile`、`zentao bug <id>` 和认证失效后的 `zentao login --useEnv`。禁止执行 `bug resolve`、`bug update`、版本查询或其他禅道写入与交付动作；用户要求同步解决状态时，说明本 Skill 只读并提示其在网页版手工处理。钥匙串条目缺失时只提示用户恢复本机 `runtime.json` 登记的凭据，不在对话中索要密码。临时材料只放在 `mktemp -d` 目录中。
+材料获取仅允许 `zentao-base/scripts/fetch_bug.js`（或旧兼容包装）执行 `zentao profile`、`zentao bug <id>` 和认证失效后的 `zentao login --useEnv`。禁止执行 `bug resolve`、`bug update`、版本查询或其他禅道写入与交付动作；用户要求同步解决状态时，说明本 Skill 只读并提示其在网页版手工处理。钥匙串条目缺失时只提示用户恢复本机 `runtime.json` 登记的凭据，不在对话中索要密码。临时材料只放在 `mktemp -d` 目录中。
