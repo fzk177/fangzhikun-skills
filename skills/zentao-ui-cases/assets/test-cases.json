@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "requirement_name": "",
+  "story_id": "",
+  "project": "",
+  "analysis": {
+    "change": "",
+    "old_behavior": "",
+    "new_behavior": "",
+    "objects": [],
+    "impacts": [],
+    "states": [],
+    "consistency": [],
+    "scenario_matrix": [],
+    "partial_failures": [],
+    "data_strategy": [],
+    "unknowns": [],
+    "strategy": []
+  },
+  "risks": [],
+  "cases": [],
+  "data_allocations": [],
+  "regressions": []
+}

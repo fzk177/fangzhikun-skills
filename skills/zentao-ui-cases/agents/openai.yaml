@@ -1,0 +1,7 @@
+interface:
+  display_name: "禅道 UI 自动化用例"
+  short_description: "结合需求与源码复用 UI 用例，分析风险并交付人工 XMind、证据报告和缺陷 HTML"
+  default_prompt: "使用 $zentao-ui-cases 根据指定 Story 与前端源码，先检索可复用资产，分析风险、验证归属及数据分配，生成 UI 测试和完整策划交付物；默认静态检查，授权执行后输出证据报告与确认缺陷 HTML。"
+
+policy:
+  allow_implicit_invocation: false

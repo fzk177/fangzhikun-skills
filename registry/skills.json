@@ -38,7 +38,7 @@
       "dependencies": []
     },
     "java-backend-code": {
-      "version": "2.0.0",
+      "version": "2.1.0",
       "ownership": "first-party",
       "source": "skills/java-backend-code",
       "target": "codex",
@@ -103,6 +103,13 @@
       "target": "codex",
       "dependencies": [],
       "externalDependencies": ["weaver-e10-builder"]
+    },
+    "zentao-ui-cases": {
+      "version": "1.2.0",
+      "ownership": "first-party",
+      "source": "skills/zentao-ui-cases",
+      "target": "codex",
+      "dependencies": ["zentao-base"]
     },
     "zentao-task": {
       "version": "3.3.0",
