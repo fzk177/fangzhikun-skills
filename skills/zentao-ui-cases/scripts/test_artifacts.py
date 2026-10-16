@@ -11,12 +11,17 @@ import io
 import json
 import re
 import sys
+
+sys.dont_write_bytecode = True
 import zipfile
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 from xml.etree import ElementTree as ET
+
+from business_artifacts import existing_attachments, render_artifacts, validate_extensions
+from design_coverage import design_markdown, validate_design
 
 CONTENT_NS = "urn:xmind:xmap:xmlns:content:2.0"
 MANIFEST_NS = "urn:xmind:xmap:xmlns:manifest:1.0"
@@ -147,6 +152,8 @@ def load_manifest(path):
         require(case and case["ownership"] != "human", "regression must reference an AI case")
         require(regression.get("kind") in {"fixed", "dynamic"}, "invalid regression kind")
         require(text(regression.get("reason")), "regression reason required")
+    validate_extensions(data)
+    validate_design(data)
     return data, cases, hashlib.sha256(raw).hexdigest()
 
 
@@ -321,6 +328,24 @@ def assess_results(data, cases, digest, results, base):
             require(strings(paths, False), f"invalid evidence group: {group}")
             for raw in paths:
                 evidence_file(raw, base)
+        product_failure = verdict == "Failed" and (
+            row.get("failure_category") == "product" or row.get("confirmed_bug")
+        )
+        if data.get("design_model") is not None and (verdict in PASSES or product_failure):
+            decision = "pass" if verdict in PASSES else "confirm product failure"
+            require(
+                cases[key].get("oracle_status") == "confirmed",
+                f"unresolved oracle cannot {decision}",
+            )
+            require(
+                cases[key].get("data_status") in {"ready", "not_required"},
+                f"unprepared data cannot {decision}",
+            )
+            coverage = {item["id"]: item for item in data["design_model"]["coverage_items"]}
+            require(
+                all(coverage[k]["disposition"] == "designed" for k in cases[key]["coverage_ids"]),
+                f"unresolved coverage cannot {decision}",
+            )
         if verdict in PASSES:
             threshold = 3 if cases[key]["risk"] == "P0" else 2
             require(RATINGS[rating] >= threshold, f"insufficient evidence rating: {key}")
@@ -598,8 +623,9 @@ def bug_html(data, cases, results, records, base):
     )
 
 
-def plan(cases_path, out, run_id):
+def plan(cases_path, out, run_id, repo=None, allow_legacy_design=False):
     data, cases, digest = load_manifest(cases_path)
+    design = validate_design(data, required=not allow_legacy_design)
     ai = [c for c in cases.values() if c["ownership"] != "human"]
     manual = [c for c in cases.values() if c["ownership"] == "human"]
     analysis = data["analysis"]
@@ -608,6 +634,7 @@ def plan(cases_path, out, run_id):
         analysis["change"],
         "旧行为：" + analysis["old_behavior"],
         "新行为：" + analysis["new_behavior"],
+        design_markdown(data),
     ]
     for key, label in (
         ("objects", "业务对象与来源"),
@@ -716,6 +743,8 @@ def plan(cases_path, out, run_id):
     }
     if (out / "test-cases.json").resolve() != cases_path.resolve():
         files["test-cases.json"] = cases_path.read_bytes()
+    business_files, business_index = render_artifacts(data, out, repo, results, out)
+    files.update(business_files)
     for name in files:
         require(not (out / name).exists(), f"output exists; use a new run directory: {out / name}")
     out.mkdir(parents=True, exist_ok=True)
@@ -726,6 +755,12 @@ def plan(cases_path, out, run_id):
         "output": str(out),
         "ai_cases": len(ai),
         "manual_cases": len(manual),
+        "business_csv": business_index["csv"],
+        "csv_status": business_index["csv_status"],
+        "review_page": str(out / "00-test-case-automation.html"),
+        "design_status": design["status"],
+        "design_counts": design["counts"],
+        "design_warnings": design["warnings"],
     }
 
 
@@ -736,11 +771,23 @@ def main():
     planning.add_argument("--cases", type=Path, required=True)
     planning.add_argument("--out", type=Path, required=True)
     planning.add_argument("--run-id", default=None)
+    planning.add_argument("--repo", type=Path, help="静态核验代码与流程引用，不执行pytest")
+    planning.add_argument(
+        "--allow-legacy-design",
+        action="store_true",
+        help="仅重放历史无覆盖模型清单；显式显示覆盖未审查，不用于新需求设计",
+    )
     reporting = commands.add_parser("report")
     reporting.add_argument("--cases", type=Path, required=True)
     reporting.add_argument("--results", type=Path, required=True)
     reporting.add_argument("--out", type=Path, required=True)
     reporting.add_argument("--final", action="store_true")
+    reporting.add_argument("--repo", type=Path, help="静态核验当前代码与关联，不证明历史部署版本")
+    viewing = commands.add_parser("view", help="为已有统一清单导出业务CSV与关联页，不执行测试")
+    viewing.add_argument("--cases", type=Path, required=True)
+    viewing.add_argument("--results", type=Path)
+    viewing.add_argument("--repo", type=Path)
+    viewing.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     try:
         if args.command == "plan":
@@ -748,7 +795,35 @@ def main():
                 args.cases,
                 args.out.resolve(),
                 args.run_id or datetime.now().strftime("%Y%m%d-%H%M%S-") + uuid4().hex[:8],
+                args.repo,
+                allow_legacy_design=args.allow_legacy_design,
             )
+        elif args.command == "view":
+            data, cases, digest = load_manifest(args.cases)
+            results = json.loads(args.results.read_text()) if args.results else None
+            base = args.results.resolve().parent if args.results else None
+            if results:
+                assess_results(data, cases, digest, results, base)
+            files, index = render_artifacts(
+                data,
+                args.out,
+                args.repo,
+                results,
+                base,
+                attachments=existing_attachments(args.cases, args.results),
+            )
+            for name in files:
+                require(not (args.out / name).exists(), "view需要新的交付目录，不覆盖历史页面")
+            args.out.mkdir(parents=True, exist_ok=True)
+            for name, payload in files.items():
+                (args.out / name).write_bytes(payload)
+            result = {
+                "stage": "view",
+                "output": str(args.out),
+                "business_csv": index["csv"],
+                "csv_status": index["csv_status"],
+                "cases": len(index["cases"]),
+            }
         else:
             data, cases, digest = load_manifest(args.cases)
             results = json.loads(args.results.read_text())
@@ -766,10 +841,19 @@ def main():
                     bugs is not None and existing_html.read_text() == bugs,
                     "final artifact already exists; use a new report snapshot directory",
                 )
+            attachments = existing_attachments(args.cases, args.results)
+            attachments["04-ai-execution-evidence-report.md"] = (
+                args.out / "04-ai-execution-evidence-report.md"
+            )
+            business_files, business_index = render_artifacts(
+                data, args.out, args.repo, results, base, attachments=attachments
+            )
             args.out.mkdir(parents=True, exist_ok=True)
             (args.out / "04-ai-execution-evidence-report.md").write_text(report, encoding="utf-8")
             if bugs is not None:
                 (args.out / "07-confirmed-bugs.html").write_text(bugs, encoding="utf-8")
+            for name, payload in business_files.items():
+                (args.out / name).write_bytes(payload)
             result = {"final": args.final, "completion_gate": not blockers, "unresolved": blockers}
         print(json.dumps(result, ensure_ascii=False))
         return 0

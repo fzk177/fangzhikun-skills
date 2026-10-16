@@ -7,7 +7,7 @@
 - 前端路径、分支、提交、工作区状态及相关文件哈希：{{frontend_revision}}
 - 自动化路径、项目、分支、提交、工作区状态及相关文件哈希：{{automation_revision}}
 - 目标环境、部署版本、账号角色与执行授权范围：{{execution_scope}}
-- 本次交付包、统一用例清单、执行报告及运行 ID：{{deliverable_links}}
+- 业务用例 CSV、用例自动化关联页、技术附件及运行 ID：{{deliverable_links}}
 
 ## 变更与风险
 
@@ -22,6 +22,14 @@
 ## 数据分配与判定依据
 
 {{data_allocations_or_not_applicable_and_oracles}}
+
+## 业务覆盖模型及缺口
+
+{{design_model_scope_dispositions_review_and_limits}}
+
+## 消费者发现与遗漏审查
+
+{{discovery_search_evidence_branches_review_and_remaining_gaps}}
 
 ## 复用决策
 

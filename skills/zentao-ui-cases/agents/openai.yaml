@@ -1,7 +1,7 @@
 interface:
   display_name: "禅道 UI 自动化用例"
-  short_description: "结合需求与源码复用 UI 用例，分析风险并交付人工 XMind、证据报告和缺陷 HTML"
-  default_prompt: "使用 $zentao-ui-cases 根据指定 Story 与前端源码，先检索可复用资产，分析风险、验证归属及数据分配，生成 UI 测试和完整策划交付物；默认静态检查，授权执行后输出证据报告与确认缺陷 HTML。"
+  short_description: "选择项目环境，交付可读业务用例CSV和自动化关联页，复用登录态、流程与测试资产"
+  default_prompt: "使用 $zentao-ui-cases 处理指定 Story，先让我选择项目配置，先建立规则、状态与上下游影响的覆盖模型，再设计业务用例并复用自动化资产；默认生成和静态检查，优先交付业务CSV与用例自动化关联页，保留人工检查和证据附件，授权执行时复用有效登录态。"
 
 policy:
   allow_implicit_invocation: false

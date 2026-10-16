@@ -3,6 +3,12 @@
   "requirement_name": "",
   "story_id": "",
   "project": "",
+  "zentao_export": {
+    "module": null,
+    "priority": null,
+    "case_type": "功能测试",
+    "stage": "系统测试阶段"
+  },
   "analysis": {
     "change": "",
     "old_behavior": "",
@@ -20,5 +26,25 @@
   "risks": [],
   "cases": [],
   "data_allocations": [],
-  "regressions": []
+  "regressions": [],
+  "design_model": {
+    "schema_version": 1,
+    "scope": "",
+    "materials": [],
+    "objects": [],
+    "dimensions": [],
+    "rules": [],
+    "impacts": [],
+    "coverage_items": [],
+    "review": {
+      "status": "pending",
+      "method": "",
+      "model_sha256": "",
+      "findings": [],
+      "limitations": []
+    },
+    "design_method_version": 2,
+    "discovery": [],
+    "branches": []
+  }
 }

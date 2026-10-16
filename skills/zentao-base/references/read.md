@@ -14,6 +14,8 @@ node "${CODEX_HOME:-$HOME/.codex}/skills/zentao-base/scripts/read_object.js" <ta
 
 先确认对象类型再执行；缺少类型或 ID 时询问，不猜测。只报告请求所需字段，正文与操作历史按需读取。
 
+`zentao-ui-cases` 只使用 `read_object.js story <ID>`，或模块的 `getStory`、`defaultOptions` 及仅 `profile` 的 `cliJson` 查询；不得借助通用入口查询任务/Bug 或调用写入模块。Story 原始材料只存系统临时目录，脱敏后的验收映射由调用方维护。
+
 ## 脚本接入
 
 只读模块为 `scripts/zentao_client.js`，提供 `defaultOptions`、`getTask`、`getStory`、`getBug`、`getBugEnvelope` 和受命令白名单限制的 `cliJson`。后者只接受 `profile` 或 `task/story/bug <ID>`，拒绝额外参数和写操作。

@@ -66,7 +66,7 @@
       "dependencies": []
     },
     "vesselhub-problem-analyze": {
-      "version": "2.4.1",
+      "version": "2.5.0",
       "ownership": "first-party",
       "source": "skills/vesselhub-problem-analyze",
       "target": "codex",
@@ -74,7 +74,7 @@
       "databaseConnection": "op"
     },
     "zentao-base": {
-      "version": "1.0.0",
+      "version": "1.1.0",
       "ownership": "first-party",
       "source": "skills/zentao-base",
       "target": "codex",
@@ -105,7 +105,7 @@
       "externalDependencies": ["weaver-e10-builder"]
     },
     "zentao-ui-cases": {
-      "version": "1.2.0",
+      "version": "1.6.1",
       "ownership": "first-party",
       "source": "skills/zentao-ui-cases",
       "target": "codex",
