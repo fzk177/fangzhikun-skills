@@ -2,6 +2,17 @@
 
 本项目使用 `MAJOR.MINOR.PATCH` 三段版本号，升级遵循 `skill-manager` 的版本约束。每个 Skill 的独立版本记录在 `registry/skills.json`。
 
+## 2026-10-19
+
+### 变更
+
+- `java-backend-code` 升级至 2.2.0：按用户要求开启 `allow_implicit_invocation`，在用户已授权新增、修改、重构或修复 Java 后端代码时自动启用；同步调整描述和启用条件，保留显式调用与现有开发型 Skill 的协作入口。启用范围变化按次版本升级，首位保持不变。
+
+### 影响与迁移
+
+- Java 后端编码任务无需再次显式调用本 Skill；纯分析排查、代码阅读、前端开发及数据库操作不触发。自动启用不增加代码修改授权，继续遵守上游确认门禁、最小改动、测试单独确认及 Git 操作边界。
+- `req-governance`、`zentao-task`、`vesselhub-problem-analyze`、`zentao-debug` 的既有依赖入口保持兼容，无需修改调用方、业务数据或本机配置。安装版须经预览确认部署，再在新会话验证自动选择。
+
 ## 2026-10-16
 
 ### 变更

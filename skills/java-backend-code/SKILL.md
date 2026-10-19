@@ -1,15 +1,16 @@
 ---
 name: java-backend-code
-description: 显式调用 $java-backend-code，或由已声明依赖它的开发型 Skill 进入 Java 后端代码修改阶段时，按照个人 Java 编码、分层和最小改动规范实施修改。覆盖类注释、中文注释、Controller Req/Resp、枚举和方法拆分；不用于前端开发、问题排查或数据库操作。
+description: 在用户要求新增、修改、重构或修复 Java 后端代码时自动启用，按照个人 Java 编码、分层和最小改动规范实施修改；也支持显式调用 $java-backend-code 或由开发型 Skill 进入已授权的 Java 编码阶段。覆盖类注释、中文注释、Controller Req/Resp、枚举和方法拆分；不用于纯分析排查、代码阅读、前端开发或数据库操作。
 metadata:
-  version: "2.1.0"
+  version: "2.2.0"
 ---
 
 # Java 后端编码
 
 ## 启用条件
 
-- 仅在用户显式调用 `$java-backend-code`、明确要求使用本 Skill，或 `$req-governance`、`$zentao-task`、`$vesselhub-problem-analyze`、`$zentao-debug` 已进入用户授权的 Java 后端代码修改阶段时启用。
+- 用户要求新增、修改、重构或修复 Java 后端代码，且已授权相应代码修改时，自动启用本 Skill，无需显式调用。
+- 也支持用户显式调用 `$java-backend-code`、明确要求使用本 Skill，或由 `$req-governance`、`$zentao-task`、`$vesselhub-problem-analyze`、`$zentao-debug` 进入用户授权的 Java 后端代码修改阶段。
 - 分析、定位、排查、评估或代码阅读不授权修改代码，也不自动启用本 Skill。
 - 同时遵守适用的 `AGENTS.md` 和上游 Skill。上游 Skill 的修改范围、确认门禁和禁止事项更严格时，以更严格的规则为准。
 
