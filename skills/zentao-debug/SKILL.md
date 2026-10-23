@@ -1,7 +1,7 @@
 ---
 name: zentao-debug
 description: 显式调用 $zentao-debug 时，只读获取指定禅道 Bug，并使用 $vesselhub-problem-analyze 完成代码、日志和数据库证据分析，涉及泛微审批流时可按需调用 $weaver 只读查询；经用户明确授权后可修复和提交代码，但始终不修改禅道 Bug 状态或字段。
-version: 4.2.1
+version: 4.3.0
 ---
 
 # ZenTao Bug 调试

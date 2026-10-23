@@ -2,7 +2,7 @@
 name: java-backend-code
 description: 在用户要求新增、修改、重构或修复 Java 后端代码时自动启用，按照个人 Java 编码、分层和最小改动规范实施修改；也支持显式调用 $java-backend-code 或由开发型 Skill 进入已授权的 Java 编码阶段。覆盖类注释、中文注释、Controller Req/Resp、枚举和方法拆分；不用于纯分析排查、代码阅读、前端开发或数据库操作。
 metadata:
-  version: "2.2.0"
+  version: "2.3.0"
 ---
 
 # Java 后端编码
