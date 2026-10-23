@@ -190,17 +190,80 @@ def selected(relative: str, skill: str | None) -> bool:
     return skill is None or relative == "CHANGELOG.md" or relative.startswith(f"skills/{skill}/")
 
 
+def retire_documents(args: argparse.Namespace, root: Path, state: dict, baseline: dict) -> int:
+    """显式退役已同步文档：核对基线、移出管理目录，再移除同步登记。"""
+
+    if not args.skill or not args.archive_dir:
+        raise RuntimeError("retire 必须指定 --skill 和 --archive-dir")
+    archive = Path(args.archive_dir).expanduser()
+    if not archive.is_absolute():
+        raise RuntimeError("归档目录必须为绝对路径")
+    for directory in (archive, *archive.parents):
+        if directory.is_symlink():
+            raise RuntimeError("归档路径不得包含软链接")
+    for forbidden in (root, REPOSITORY_ROOT, STATE_PATH.parent):
+        if archive.resolve().is_relative_to(forbidden.resolve()) or forbidden.resolve().is_relative_to(archive.resolve()):
+            raise RuntimeError("归档目录不得与源码、文档或同步状态目录嵌套")
+    if archive.exists():
+        raise RuntimeError("归档目录已存在，停止覆盖")
+    prefix = f"skills/{args.skill}/"
+    paths = {path for path in baseline if path.startswith(prefix)}
+    paths |= {path for path in scan(REPOSITORY_ROOT, {args.skill}) | scan(root, {args.skill})
+              if path.startswith(prefix)}
+    if not paths:
+        raise RuntimeError("没有可退役的已同步文档")
+    for relative in sorted(paths):
+        repository = read_document(REPOSITORY_ROOT, relative)
+        obsidian = read_document(root, relative)
+        if repository is None or obsidian is None or repository != obsidian or digest(repository) != baseline.get(relative):
+            raise RuntimeError(f"退役文档与源码或同步基线不一致，已停止：{relative}")
+    document_directory = root / "skills" / args.skill
+    for path in document_directory.rglob("*"):
+        ensure_no_symlink(path, root)
+        if not (path.is_dir() or (path.is_file() and path.suffix.lower() == ".md")):
+            raise RuntimeError(f"文档目录含未管理内容，已停止：{path}")
+    print(f"退役 {args.skill}：归档 {len(paths)} 个已同步文档到 {archive}")
+    if not args.apply:
+        print("仅预览；显式确认删除后使用相同参数加 --apply")
+        return 0
+    if read_json(STATE_PATH) != state:
+        raise RuntimeError("退役前同步记录发生变化，已停止")
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    os.rename(document_directory, archive)
+    try:
+        if read_json(STATE_PATH) != state:
+            raise RuntimeError("退役时同步记录发生变化，已停止")
+        for relative in paths:
+            archived = read_document(archive, relative[len(prefix):])
+            repository = read_document(REPOSITORY_ROOT, relative)
+            if archived != repository or archived is None or digest(archived) != baseline[relative]:
+                raise RuntimeError(f"退役时文档内容发生变化，已停止：{relative}")
+        write_json_atomic(STATE_PATH, dict(state, files={
+            relative: value for relative, value in baseline.items() if relative not in paths
+        }))
+    except Exception:
+        os.rename(archive, document_directory)
+        raise
+    print("已保留归档并移除目标文档同步登记；源码和注册表未修改")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="受控同步 Skill Markdown 与 Obsidian 文档")
-    parser.add_argument("command", choices=("status", "sync", "check"))
+    parser.add_argument("command", choices=("status", "sync", "check", "retire"))
     parser.add_argument("--skill", help="仅处理指定 Skill 文档和 CHANGELOG.md")
     parser.add_argument("--docs-root", help="覆盖本机配置中的 Obsidian 文档目录")
-    parser.add_argument("--apply", action="store_true", help="仅 sync 可用；应用预览中的安全变更")
+    parser.add_argument("--apply", action="store_true", help="应用 sync 或显式 retire 的安全变更")
+    parser.add_argument("--archive-dir", help="retire 的文档归档目录，必须位于管理目录之外")
     parser.add_argument("--import-new", action="append", default=[], metavar="相对路径",
                         help="显式允许从 Obsidian 导入指定的新 Markdown 文件")
     args = parser.parse_args()
-    if (args.apply or args.import_new) and args.command != "sync":
-        parser.error("--apply 和 --import-new 仅适用于 sync")
+    if args.apply and args.command not in {"sync", "retire"}:
+        parser.error("--apply 仅适用于 sync 或 retire")
+    if args.import_new and args.command != "sync":
+        parser.error("--import-new 仅适用于 sync")
+    if args.archive_dir and args.command != "retire":
+        parser.error("--archive-dir 仅适用于 retire")
 
     root = document_root(args.docs_root)
     skill_dirs = skill_directories()
@@ -217,6 +280,8 @@ def main() -> int:
     baseline = state.get("files", {})
     if not isinstance(baseline, dict):
         raise RuntimeError("同步记录结构不合法")
+    if args.command == "retire":
+        return retire_documents(args, root, state, baseline)
 
     paths = (scan(REPOSITORY_ROOT, set(skill_dirs)) |
              scan(root, set(skill_dirs)) |

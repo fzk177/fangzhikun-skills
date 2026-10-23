@@ -1,6 +1,6 @@
 interface:
   display_name: "禅道任务交付"
-  short_description: "按任务 ID 编排开发、交付、受控完成与指派"
-  default_prompt: "使用 $zentao-task 完成指定 ID 的禅道任务；禅道写入必须经过独立预览、确认、计划哈希校验与回读。"
+  short_description: "首次显式激活后持续跟进单个任务，串联编码核对、本地交付与受控写入"
+  default_prompt: "使用 $zentao-task 完成指定 ID 的禅道任务；首次激活后可直接用确认、数字或自然语言继续，Git 与禅道写入分别预览确认。"
 policy:
   allow_implicit_invocation: false

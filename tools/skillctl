@@ -1062,6 +1062,278 @@ def command_path(args: argparse.Namespace, registry: dict) -> int:
     return 0
 
 
+CLAUDE_UNSUPPORTED = {"team-coordinator", "team-review"}
+CLAUDE_ADAPTER_VERSION = 1
+
+
+def claude_root() -> Path:
+    """遵守 Claude Code 的个人配置目录约定。"""
+
+    root = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))).expanduser()
+    if not root.is_absolute():
+        raise RuntimeError("CLAUDE_CONFIG_DIR 必须为绝对路径")
+    skills_root = root / "skills"
+    for forbidden in (REPOSITORY_ROOT, install_root("codex"), install_root("agents")):
+        if (skills_root.resolve().is_relative_to(forbidden.resolve())
+                or forbidden.resolve().is_relative_to(skills_root.resolve())):
+            raise RuntimeError("Claude 目录不得与源码、Codex 或 Agents 安装目录嵌套")
+    return skills_root
+
+
+def claude_state_path(name: str) -> Path:
+    return state_root() / "claude" / "deployments" / f"{name}.json"
+
+
+def ensure_plain_tree(path: Path) -> None:
+    """拒绝链接、特殊文件和非目录，避免越界覆盖或遗漏漂移。"""
+
+    if any(part.is_symlink() for part in (path, *path.parents)):
+        raise RuntimeError(f"Claude 同步不覆盖软链接路径：{path}")
+    if path.exists() and not path.is_dir():
+        raise RuntimeError(f"目标不是目录：{path}")
+    if path.is_dir():
+        for item in path.rglob("*"):
+            if item.is_symlink() or not (item.is_dir() or item.is_file()):
+                raise RuntimeError(f"Claude 同步不处理链接或特殊文件：{item}")
+
+
+def claude_names(args: argparse.Namespace, registry: dict) -> list[str]:
+    names = select_names(args, registry)
+    excluded = set(args.exclude)
+    unknown = excluded - set(registry["skills"])
+    if unknown:
+        raise RuntimeError(f"排除名称未登记：{', '.join(sorted(unknown))}")
+    if args.all:
+        excluded |= CLAUDE_UNSUPPORTED
+    names = [name for name in names if name not in excluded]
+    unsupported = set(names) & CLAUDE_UNSUPPORTED
+    if unsupported:
+        raise RuntimeError(f"尚未适配 Claude 的团队 Skill：{', '.join(sorted(unsupported))}")
+    if not names:
+        raise RuntimeError("没有需要处理的 Claude Skill")
+    return dependency_order(names, registry)
+
+
+def claude_contents(name: str, registry: dict) -> tuple[dict[str, bytes], dict]:
+    """仅转换入口调用约定，其余文件保持源码内容和相对布局。"""
+
+    metadata = registry["skills"][name]
+    if metadata.get("ownership") != "first-party":
+        raise RuntimeError("Claude 同步只支持已登记的自研 Skill")
+    source = source_path(metadata)
+    ensure_plain_tree(source)
+    policy_path = source / "agents" / "openai.yaml"
+    policy = policy_path.read_text(encoding="utf-8") if policy_path.is_file() else ""
+    flags = re.findall(r"(?m)^\s*allow_implicit_invocation:\s*(true|false)\s*$", policy)
+    if len(flags) != 1:
+        raise RuntimeError(f"{name}: 缺少唯一明确的 allow_implicit_invocation 策略")
+    contents = {item.relative_to(source).as_posix(): item.read_bytes() for item in files_in(source)}
+    entry = contents["SKILL.md"].decode("utf-8")
+    parts = entry.split("\n---", 1)
+    if len(parts) != 2 or not parts[0].startswith("---\n"):
+        raise RuntimeError(f"{name}: SKILL.md frontmatter 格式不支持")
+    header, body = parts
+    header = re.sub(r"(?m)^disable-model-invocation:.*\n?", "", header)
+    header = re.sub(r"(?m)^(description:.*)$", lambda m: re.sub(
+        r"\$([a-z][a-z0-9-]+)", r"/\1", m.group(0)), header)
+    header += "\ndisable-model-invocation: " + ("false" if flags[0] == "true" else "true")
+    note = (
+        "\n\n## Claude Code 接入说明\n\n"
+        f"本入口由 skillctl 生成（适配格式 {CLAUDE_ADAPTER_VERSION}），请勿直接编辑。"
+        "原文的 `$技能名` 在 Claude Code 中使用 `/技能名` 显式调用，授权边界保持原义。"
+        "已授权流程中的内部依赖可按原规则直接读取同级 Skill 文档，不能据此自主开启新流程。"
+        "使用实际会话身份；没有 Codex 会话标识或专属工具时报告限制，不伪造或复用其他会话。\n"
+    )
+    external = {}
+    for dependency in metadata.get("externalDependencies", []):
+        candidates = [install_root(target) / dependency for target in ("codex", "agents")]
+        installed = next((path for path in candidates if (path / "SKILL.md").is_file()), None)
+        if installed is None:
+            raise RuntimeError(f"{name}: 外部依赖尚未安装：{dependency}")
+        entry_path = installed / "SKILL.md"
+        external[dependency] = {"entry": str(entry_path), "sha256": sha256_file(entry_path)}
+        note += (f"\n外部依赖 `{dependency}` 保持原安装；仅在本流程需要时读取 "
+                 f"[{dependency}]({entry_path})，其相对资源以原安装目录为基准。\n")
+    if name == "skill-manager":
+        note += (
+            "\n管理当前 Claude 副本时，先定位配置中的源码仓库，再用 "
+            "`tools/skillctl claude-status --all` 或 `tools/skillctl claude-sync --all` 预览；"
+            "用户确认后才加 `--apply --plan-hash <完整哈希>`。"
+            "普通 `deploy/status/rollback` 仍针对 Codex 原版；不得拿它们替代 Claude 操作。"
+            "Claude 备份恢复使用 `claude-rollback <技能名> --backup <备份目录>` 先预览。\n"
+        )
+    contents["SKILL.md"] = (header + "\n---" + note + body).encode("utf-8")
+    return contents, {"implicit": flags[0] == "true", "external": external}
+
+
+def claude_plan(args: argparse.Namespace, registry: dict) -> dict:
+    """将源码、适配内容、目标、依赖、工具和旧记录绑定到同一计划。"""
+
+    errors = validate_registry(registry)
+    names = claude_names(args, registry)
+    items = []
+    for name in names:
+        errors.extend(validate_skill(name, registry["skills"][name]))
+    if errors:
+        raise RuntimeError("Claude 同步前校验失败：\n" + "\n".join(errors))
+    for name in names:
+        metadata = registry["skills"][name]
+        target = claude_root() / name
+        ensure_plain_tree(target)
+        contents, context = claude_contents(name, registry)
+        expected = content_manifest(contents)
+        record_path = claude_state_path(name)
+        if record_path.is_symlink():
+            raise RuntimeError(f"Claude 部署记录不支持软链接：{name}")
+        previous = json.loads(record_path.read_text(encoding="utf-8")) if record_path.exists() else {}
+        current = manifest(target)
+        if target.exists() and not previous:
+            raise RuntimeError(f"{name}: Claude 目录已存在但未受管；停止覆盖，请先审阅")
+        if previous and (previous.get("target") != str(target) or current != previous.get("manifest")):
+            raise RuntimeError(f"{name}: Claude 安装或路径存在人工漂移，停止覆盖")
+        for dependency in metadata.get("dependencies", []):
+            if dependency not in names:
+                dependency_contents, _ = claude_contents(dependency, registry)
+                if manifest(claude_root() / dependency) != content_manifest(dependency_contents):
+                    raise RuntimeError(f"{name}: 先同步 Claude 依赖 {dependency}，或使用 --all")
+        items.append({
+            "skill": name, "version": metadata["version"], "target": str(target),
+            "source": str(source_path(metadata)), "sourceManifest": manifest(source_path(metadata)),
+            "manifest": expected, "previous": previous, "current": current,
+            "exists": target.exists(), "context": context,
+        })
+    return {"adapterVersion": CLAUDE_ADAPTER_VERSION, "repositoryCommit": repository_commit(),
+            "registryHash": sha256_file(REGISTRY_PATH), "toolHash": sha256_file(Path(__file__)),
+            "items": items}
+
+
+def command_claude_status(args: argparse.Namespace, registry: dict) -> int:
+    plan = claude_plan(args, registry)
+    for item in plan["items"]:
+        label = "已同步" if item["exists"] and item["current"] == item["manifest"] else "待同步"
+        mode = "允许自动启用" if item["context"]["implicit"] else "仅手动调用"
+        print(f"{item['skill']} {item['version']}: {label}；{mode} ({item['target']})")
+    return 0
+
+
+def install_claude_contents(name: str, contents: dict[str, bytes], record: dict, backup_prefix: str) -> None:
+    """原子替换单个 Claude 副本，失败时恢复旧安装与状态。"""
+
+    target = claude_root() / name
+    ensure_plain_tree(target)
+    record_path = claude_state_path(name)
+    old_record = json.loads(record_path.read_text(encoding="utf-8")) if record_path.exists() else None
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f".{name}.", dir=target.parent))
+    backup = state_root() / "claude" / backup_prefix / name / timestamp()
+    moved_old = False
+    placed_new = False
+    try:
+        source = Path(record["source"]) if record.get("source") else None
+        for relative, content in contents.items():
+            destination = staging / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(content)
+            if source and (source / relative).is_file():
+                shutil.copymode(source / relative, destination)
+        if manifest(staging) != record["manifest"]:
+            raise RuntimeError("Claude 暂存目录哈希校验失败")
+        if target.exists():
+            backup.mkdir(parents=True, exist_ok=False)
+            write_json_atomic(backup / "deployment.json", old_record or {})
+            os.replace(target, backup / "skill")
+            moved_old = True
+        os.replace(staging, target)
+        placed_new = True
+        if manifest(target) != record["manifest"]:
+            raise RuntimeError("Claude 部署后哈希校验失败")
+        record["backup"] = str(backup) if moved_old else ""
+        record["deployedAt"] = datetime_module.datetime.now().astimezone().isoformat()
+        write_json_atomic(record_path, record)
+    except Exception:
+        if placed_new:
+            failed = state_root() / "claude" / "failed" / name / timestamp()
+            failed.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(target, failed)
+        if moved_old:
+            os.replace(backup / "skill", target)
+        if old_record is not None:
+            write_json_atomic(record_path, old_record)
+        raise
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
+    print(f"已同步 Claude {name} -> {target}；备份：{record['backup'] or '首次安装，无旧版本'}")
+
+
+def command_claude_sync(args: argparse.Namespace, registry: dict) -> int:
+    plan = claude_plan(args, registry)
+    digest = hashlib.sha256(json.dumps(plan, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    for item in plan["items"]:
+        mode = "允许自动启用" if item["context"]["implicit"] else "仅手动调用"
+        print(f"{item['skill']} {item['version']}；{mode} -> {item['target']}")
+    print(f"计划哈希：{digest}")
+    if not args.apply:
+        print("仅预览；确认后使用同一参数加 --apply --plan-hash <完整哈希>")
+        return 0
+    if args.plan_hash != digest:
+        raise RuntimeError("Claude 同步计划已变化或未提供确认哈希，请重新预览")
+    # 在首次写入之前核对全部文档；不自动发布 Git 或修改真实配置。
+    checked = subprocess.run([str(REPOSITORY_ROOT / "tools" / "skilldocs"), "check"],
+                             cwd=REPOSITORY_ROOT, capture_output=True, text=True)
+    if checked.returncode:
+        raise RuntimeError("Obsidian 文档不一致，停止 Claude 同步：" + checked.stdout + checked.stderr)
+    if claude_plan(args, registry) != plan:
+        raise RuntimeError("文档检查后 Claude 同步计划发生变化，请重新预览")
+    for item in plan["items"]:
+        name = item["skill"]
+        contents, context = claude_contents(name, registry)
+        if (manifest(Path(item["target"])) != item["current"]
+                or Path(item["target"]).exists() != item["exists"]
+                or content_manifest(contents) != item["manifest"] or context != item["context"]):
+            raise RuntimeError(f"{name}: 写入前内容变化，停止后续同步")
+        if item["exists"] and item["current"] == item["manifest"]:
+            print(f"Claude {name} 已同步，跳过")
+            continue
+        record = {key: item[key] for key in ("skill", "version", "target", "source", "manifest", "context")}
+        record.update({"adapterVersion": CLAUDE_ADAPTER_VERSION,
+                       "repositoryCommit": plan["repositoryCommit"], "sourceManifest": item["sourceManifest"]})
+        install_claude_contents(name, contents, record, "backups")
+    return 0
+
+
+def command_claude_rollback(args: argparse.Namespace, registry: dict) -> int:
+    if args.skill not in registry["skills"] or args.skill in CLAUDE_UNSUPPORTED:
+        raise RuntimeError("Claude 回滚仅支持已适配的受管 Skill")
+    backup = Path(args.backup).expanduser()
+    backup_root = state_root() / "claude" / "backups" / args.skill
+    if not backup.is_absolute() or backup.parent != backup_root:
+        raise RuntimeError("必须指定该 Skill 的完整 Claude 备份目录")
+    ensure_plain_tree(backup)
+    if not (backup / "skill").is_dir() or not (backup / "deployment.json").is_file():
+        raise RuntimeError("Claude 备份不完整")
+    target = claude_root() / args.skill
+    ensure_plain_tree(target)
+    record = json.loads((backup / "deployment.json").read_text(encoding="utf-8"))
+    if record.get("target") != str(target) or record.get("manifest") != manifest(backup / "skill"):
+        raise RuntimeError("Claude 备份与部署记录不一致")
+    plan = {"skill": args.skill, "backup": str(backup), "record": record,
+            "current": manifest(target), "exists": target.exists(),
+            "stateHash": sha256_file(claude_state_path(args.skill)),
+            "toolHash": sha256_file(Path(__file__))}
+    digest = hashlib.sha256(json.dumps(plan, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    print(f"Claude 回滚 {args.skill}：{backup} -> {target}\n计划哈希：{digest}")
+    if not args.apply:
+        return 0
+    if args.plan_hash != digest:
+        raise RuntimeError("Claude 回滚计划变化或未提供确认哈希")
+    contents = {item.relative_to(backup / "skill").as_posix(): item.read_bytes()
+                for item in files_in(backup / "skill")}
+    # 保留选定备份；被替换版本另存到 replaced，不回退仓库或 Codex。
+    install_claude_contents(args.skill, contents, dict(record, source=str(backup / "skill")), "replaced")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """构造命令行解析器。"""
 
@@ -1109,6 +1381,20 @@ def build_parser() -> argparse.ArgumentParser:
     path_parser = subparsers.add_parser("path")
     path_parser.add_argument("skill")
     path_parser.add_argument("--source", action="store_true")
+
+    for command_name in ("claude-status", "claude-sync"):
+        claude_parser = subparsers.add_parser(command_name)
+        claude_parser.add_argument("skill", nargs="?")
+        claude_parser.add_argument("--all", action="store_true", help="处理通用自研 Skill，自动排除两个团队 Skill")
+        claude_parser.add_argument("--exclude", action="append", default=[])
+        if command_name == "claude-sync":
+            claude_parser.add_argument("--apply", action="store_true")
+            claude_parser.add_argument("--plan-hash")
+    claude_rollback = subparsers.add_parser("claude-rollback")
+    claude_rollback.add_argument("skill")
+    claude_rollback.add_argument("--backup", required=True)
+    claude_rollback.add_argument("--apply", action="store_true")
+    claude_rollback.add_argument("--plan-hash")
     return parser
 
 
@@ -1128,9 +1414,26 @@ def main() -> int:
         "rollback": command_rollback,
         "doctor": command_doctor,
         "path": command_path,
+        "claude-status": command_claude_status,
+        "claude-sync": command_claude_sync,
+        "claude-rollback": command_claude_rollback,
     }
 
     try:
+        if args.command in {"claude-sync", "claude-rollback"} and args.apply:
+            # 仅写操作加非阻塞互斥锁；只读预览不创建状态目录或锁文件。
+            import fcntl
+
+            lock_path = state_root() / "claude" / ".operation.lock"
+            ensure_plain_tree(lock_path.parent)
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(descriptor, "w") as lock_file:
+                try:
+                    fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError as error:
+                    raise RuntimeError("另一个 Claude 部署或回滚正在执行，请稍后重新预览") from error
+                return handlers[args.command](args, registry)
         return handlers[args.command](args, registry)
     except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
         print(f"错误：{error}", file=sys.stderr)

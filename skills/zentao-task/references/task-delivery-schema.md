@@ -21,6 +21,8 @@
 
 `task_delivery_record.js` 只创建任务交付模板、更新交付 Frontmatter 和代码确认后的 Project Manager 任务字段。业务内容由 agent 根据实际代码和用户确认结果填写，不能编造。
 
+同一任务复用既有交付记录；已激活流程后不因用户省略 Skill 前缀而新建记录。最终交付事实以本记录及既有同步数据为准。首次只读分析仍不创建本地记录。
+
 ## 交付状态
 
 | 状态 | 含义 |
@@ -65,7 +67,11 @@
 
 ## Codex 会话关联区域
 
-显式 `$zentao-task` 会话由全局 Codex 同步程序按 `zentaoSourceType=task` 与 `zentaoId` 自动关联。任务交付记录存在后，同步程序维护以下投影：
+显式 `$zentao-task` 会话由全局 Codex 同步程序按 `zentaoSourceType=task` 与 `zentaoId` 自动关联。
+
+首次显式启动后，同一任务的普通短回复继续沿用既有流程上下文，不要求每回合新增显式调用或手工补写关联。只能使用实际会话身份；没有 Codex 身份与同步能力时报告限制，不伪造 Codex Session ID 或手工维护 `codex:auto` 区域。
+
+任务交付记录存在后，同步程序维护以下投影：
 
 - 交付 Frontmatter 中由 `# codex:auto:sessions:start/end` 包围的 `codexSessions`。
 - 交付正文中的 `<!-- codex:auto:sessions:start/end -->` 会话列表。

@@ -112,7 +112,7 @@
       "dependencies": ["zentao-base"]
     },
     "zentao-task": {
-      "version": "3.3.0",
+      "version": "3.4.1",
       "ownership": "first-party",
       "source": "skills/zentao-task",
       "target": "codex",
