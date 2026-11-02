@@ -48,4 +48,26 @@ async function assignTask(options, taskId, data) {
   }
 }
 
-module.exports = { assignTask, writeCliJson };
+// Bug 写入口独立于任务接口，只接受小队 Bug 计划的四个固定字段。
+function resolveBug(options, bugId, data, caller) {
+  const fields = ['resolution', 'resolvedBuild', 'assignedTo', 'comment'];
+  if (caller !== 'zentao-squad-delivery' || !/^[1-9]\d*$/.test(String(bugId))
+    || !data || typeof data !== 'object' || Array.isArray(data)
+    || Object.keys(data).length !== fields.length
+    || Object.keys(data).some(key => !fields.includes(key))
+    || fields.some(key => typeof data[key] !== 'string' || !data[key].trim())
+    || data.resolution !== 'fixed' || data.resolvedBuild !== 'trunk'
+    || !/^[A-Za-z0-9_.@-]+$/.test(data.assignedTo) || data.assignedTo === 'closed') {
+    throw new Error('Bug 解决仅允许小队计划的 fixed、trunk、创建人账号与备注');
+  }
+  try {
+    return rawCliJson(options, [
+      'bug', 'resolve', `--bugID=${bugId}`,
+      ...fields.map(key => `--${key}=${data[key]}`),
+    ]);
+  } catch (error) {
+    return authFailure(options, error);
+  }
+}
+
+module.exports = { assignTask, writeCliJson, resolveBug };
