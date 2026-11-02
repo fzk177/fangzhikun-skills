@@ -1,0 +1,6 @@
+interface:
+  display_name: "开发小队任务收尾"
+  short_description: "测试复核通过后自动完成本地提交、交付资料、禅道完成与固定指派"
+  default_prompt: "使用 $zentao-squad-delivery 收尾当前开发小队 issue，核实成员提供的唯一禅道任务 ID 和测试通过证据后自动执行。"
+policy:
+  allow_implicit_invocation: true

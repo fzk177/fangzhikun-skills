@@ -74,7 +74,7 @@
       "databaseConnection": "op"
     },
     "zentao-base": {
-      "version": "1.1.1",
+      "version": "1.2.0",
       "ownership": "first-party",
       "source": "skills/zentao-base",
       "target": "codex",
@@ -110,6 +110,14 @@
       "source": "skills/zentao-ui-cases",
       "target": "codex",
       "dependencies": ["zentao-base"]
+    },
+    "zentao-squad-delivery": {
+      "version": "1.0.0",
+      "ownership": "first-party",
+      "source": "skills/zentao-squad-delivery",
+      "target": "codex",
+      "dependencies": ["zentao-base", "zentao-task", "zentao-project-manager"],
+      "externalDependencies": ["git-branch-delivery"]
     },
     "zentao-task": {
       "version": "3.5.0",
