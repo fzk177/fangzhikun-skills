@@ -1,7 +1,8 @@
 ---
 name: zentao-base
 description: 显式调用时读取禅道任务、需求和 Bug；供 zentao-task、zentao-debug 复用基础能力，并供 zentao-ui-cases 只读查询指定 Story。继承调用方权限，不编排编码、Git、故障分析或本地交付流程。
-version: 1.1.0
+metadata:
+  version: 1.1.1
 ---
 
 # 禅道基础能力

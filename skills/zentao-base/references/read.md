@@ -20,6 +20,8 @@ node "${CODEX_HOME:-$HOME/.codex}/skills/zentao-base/scripts/read_object.js" <ta
 
 只读模块为 `scripts/zentao_client.js`，提供 `defaultOptions`、`getTask`、`getStory`、`getBug`、`getBugEnvelope` 和受命令白名单限制的 `cliJson`。后者只接受 `profile` 或 `task/story/bug <ID>`，拒绝额外参数和写操作。
 
-Bug 原始材料使用 raw 信封，兼容 `{status,data}`、`{bug,actions}` 和对象自身携带的 actions；原始响应另行保留。需求查询在 CLI 未返回历史时使用已经核实的 v2 GET 详情接口补齐，不能伪造空历史；任务详情保留 CLI 已返回的历史。
+任务详情使用 raw，避免 CLI 0.4.0 的 JSON 对象提取丢弃顶层操作历史；兼容 `{task,actions}`、`{status,data:{task,actions}}`、`{status,data:task}` 和任务对象本体，校验返回 ID 后合并顶层、data 内或任务内的 actions。历史缺失时保持缺失，由调用方的交付前置检查阻止写入，不能伪造空历史。
+
+Bug 原始材料使用 raw 信封，兼容 `{status,data}`、`{bug,actions}` 和对象自身携带的 actions；原始响应另行保留。需求查询在 CLI 未返回历史时使用已经核实的 v2 GET 详情接口补齐，不能伪造空历史。
 
 `scripts/zentao_transport.js` 是内部传输实现，不作为 agent 的任意 CLI／API 执行入口。`zentao-task` 中原 `scripts/zentao_cli.js` 保留只读兼容导出及本地交付所需辅助函数；原型访问与项目同步仍由原 skill 负责。

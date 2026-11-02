@@ -46,14 +46,18 @@ function getBug(options, bugId) {
 }
 
 function getTask(options, taskId) {
-  const body = cliJson(options, ['task', String(taskId)]);
-  if (!body.task || String(body.task.id || '') !== String(taskId)) {
+  // CLI 0.4.0 的 JSON 输出只提取任务对象，raw 才会保留顶层操作历史。
+  const body = readJson(options, ['task', String(taskId)], 'raw');
+  const data = body?.data;
+  const task = body?.task || data?.task || data || body;
+  if (!task || typeof task !== 'object' || Array.isArray(task)
+    || String(task.id || '') !== String(taskId)) {
     throw new Error(`未找到禅道任务 #${taskId}`);
   }
-  if (!Array.isArray(body.task.actions) && Array.isArray(body.actions)) {
-    return { ...body.task, actions: body.actions };
-  }
-  return body.task;
+  const actions = Array.isArray(body.actions) ? body.actions
+    : (Array.isArray(data?.actions) ? data.actions : task.actions);
+  // 历史未返回时保持缺失，让调用方的交付前置检查继续阻止写入。
+  return Array.isArray(actions) ? { ...task, actions } : task;
 }
 
 function getStory(options, storyId) {
