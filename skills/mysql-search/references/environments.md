@@ -14,6 +14,7 @@
 ## 定位规则
 
 - 查询完整目标为连接、环境、数据库；新调用显式指定三个参数。OP/BPM 的通道由脚本固定，配置不得改变路由或关闭只读策略。
+- OP dev/pre 配置可选登记 `databaseHints`（非秘密的业务库名提示数组），用于说明测试环境实际库名与生产库名的差异；它只在 `connections.py list` 中展示，不改变路由、不扩大或替代 allowedDatabases 白名单，查询时也不会自动改写 `--database`。重新执行 configure.sh 时保留该提示。
 - 旧命令省略 --connection 时固定 OP；请求的库已登记于 BPM 时提示补充连接参数，不自动转到 BPM。不从库名猜环境。BPM 配置缺失或损坏不阻止旧命令查询独立的 OP 目标。
 - OP prod 只接受该配置中的精确 DMS 数据库映射；BPM prod 只接受该配置中唯一 allowedDatabases 项。OP dev/pre 保持原指定 schema 的方式，可在配置中额外限定 allowedDatabases，重新配置时保留该范围；无效白名单在录入凭据前拒绝。
 - BPM dev/pre、未知连接、未登记库、停用连接、缺失配置或无效配置均停止，不读取凭据或跨连接尝试。

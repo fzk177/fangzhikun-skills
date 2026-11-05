@@ -245,11 +245,13 @@ fi
 OP_DATABASE_SCOPE='{}'
 if [[ "$CONNECTION" == "op" && -f "$READ_CONFIG_FILE" ]]; then
   if ! OP_DATABASE_SCOPE="$(jq -ce '
-    if has("allowedDatabases") then
+    (if has("allowedDatabases") then
       if (.allowedDatabases | type == "array" and all(.[]; type == "string" and test("^[A-Za-z0-9_]+$")))
       then {allowedDatabases: .allowedDatabases}
       else error("invalid database scope") end
-    else {} end
+    else {} end)
+    + (if (.databaseHints | type == "array" and length > 0 and all(.[]; type == "string" and test("^[A-Za-z0-9_]+$")))
+      then {databaseHints: .databaseHints} else {} end)
   ' "$READ_CONFIG_FILE" 2>/dev/null)"; then
     printf '%s\n' "OP 原数据库白名单无效，禁止配置时丢弃访问限制" >&2
     exit 4

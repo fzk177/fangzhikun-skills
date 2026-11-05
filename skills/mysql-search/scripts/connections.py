@@ -160,6 +160,14 @@ def migrate():
     return {"connection": "op", "migratedEnvironments": migrated, "legacyFilesPreserved": True}
 
 
+def database_hints(data):
+    """读取本机登记的业务库名提示；仅用于展示，不参与路由或白名单。"""
+    hints = data.get("databaseHints")
+    if isinstance(hints, list) and hints and all(isinstance(x, str) and re.fullmatch(r"[A-Za-z0-9_]+", x) for x in hints):
+        return hints
+    return None
+
+
 def listing():
     rows = []
     for connection, definition in CATALOG.items():
@@ -168,10 +176,12 @@ def listing():
                 _, data, legacy = load(connection, environment)
                 state = "disabled" if not data.get("enabled", True) else "pending" if not data.get("configured", True) else "configured"
                 databases = list(data.get("databases", {})) if transport == "dms" else data.get("allowedDatabases")
+                hints = database_hints(data)
             except ConfigurationError:
-                state, databases, legacy = "missing-or-invalid", None, False
+                state, databases, hints, legacy = "missing-or-invalid", None, None, False
             rows.append({"connection": connection, "displayName": definition["name"], "environment": environment,
-                         "transport": transport, "state": state, "databases": databases, "legacy": legacy})
+                         "transport": transport, "state": state, "databases": databases, "databaseHints": hints,
+                         "legacy": legacy})
     return rows
 
 

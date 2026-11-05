@@ -2,7 +2,7 @@
 name: mysql-search
 description: 显式调用 $mysql-search，或由注册表中已声明依赖它的问题分析 Skill 按需进入数据库证据补全流程时，对 OP 数据库连接（dev/pre 直连、prod DMS）和 BPM 数据库连接（仅 prod 直连）执行受脚本强制限制的只读查询并分析结果；不执行写入、DDL、锁定、存储过程或权限变更。
 metadata:
-  version: "2.4.0"
+  version: "2.4.1"
 ---
 
 # 数据库只读查询
@@ -54,6 +54,7 @@ bash "${CODEX_HOME:-$HOME/.codex}/skills/mysql-search/scripts/query.sh" \
 - OP dev/pre 和 BPM prod 从独立配置的 Host、端口和用户名，以及 macOS 钥匙串中的密码读取连接信息。密码只写入权限为 `600` 的临时 MySQL option 文件，并在进程退出时删除。
 - OP prod 从本机配置读取 DMS 地域、租户 ID、阿里云 CLI profile，以及数据库名对应的 DMS DbId 和逻辑库标记；凭据由阿里云 CLI 官方认证机制管理，Skill 不读取或复制凭据文件。
 - 数据库必须在每次查询时通过 `--database` 明确指定。OP prod 数据库名必须存在精确的本机 DMS 映射，不搜索近似名称，也不自动切换 DbId、租户或地域。
+- OP dev/pre 的业务库名可能与生产不同（例如测试库带前缀）。查询前先用 `connections.py list` 查看该连接环境的 `databaseHints`（本机登记的业务库名提示），按其中的实际库名传入 `--database`；不把生产库名直接套用到 dev/pre，也不自动改写库名。未登记提示且无法确定时，可对 `information_schema.SCHEMATA` 做定向只读查询确认，仍无法唯一对应时询问用户。
 - 校验器解析完整查询，只放行已实现的语法和无副作用的 MySQL 5.7.20+/8.0 共有内置函数；拒绝所有 `ANALYZE` 变体、未知/加引号/schema 限定函数、注释、变量、反斜杠和客户端命令。字符串中的分号和关键字按字面值处理，字符串转义仅使用两个单引号。
 - 所有引用表都必须先通过同一环境和通道的 `information_schema.TABLES` 定向核验；仅允许原生基础表和 MySQL 自带的 `information_schema` 对象。表类型不符、缺失、结果异常时不发送业务查询。不允许跨业务库查询。
 - 所有 MySQL 直连设置会话只读、执行超时和只读事务，并禁用本地文件导入、客户端命令和自动重连。BPM 在同一连接/只读事务中核验 MySQL 5.7.20+ 或 8.0、实际数据库、会话只读状态和表对象，再执行查询；不匹配时停止。OP prod 在调用 DMS 前执行同一套完整查询白名单，并在返回后校验结果数量和行数。所有环境的 `SELECT` 自动补齐末尾 `LIMIT`，已有上限不得超过本次 `--limit`。默认 200 行；`prod` 最大 200，`dev/pre` 最大 500。

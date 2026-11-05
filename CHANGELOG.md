@@ -2,6 +2,16 @@
 
 本项目使用 `MAJOR.MINOR.PATCH` 三段版本号，升级遵循 `skill-manager` 的版本约束。每个 Skill 的独立版本记录在 `registry/skills.json`。
 
+## 2026-11-05
+
+### 变更
+
+- `mysql-search` 升级至 2.4.1：OP dev 切换到新的测试库实例后，测试环境业务库名与生产不同（带测试前缀）。OP dev/pre 本机配置新增可选的 `databaseHints`（非秘密业务库名提示），`connections.py list` 会展示它，configure.sh 重新配置时保留。SKILL.md 明确：查询 dev/pre 前先按提示确认实际库名，不把生产库名直接套用到测试环境，也不自动改写 `--database`。
+
+### 影响与迁移
+
+- 该字段可选，只用于展示；不改变路由、白名单、只读策略或凭据存储，旧配置无需迁移。真实库名和实例地址只登记在本机配置，不进入公开仓库。
+
 ## 2026-11-02
 
 ### 变更

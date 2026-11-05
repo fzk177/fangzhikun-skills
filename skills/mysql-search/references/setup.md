@@ -11,7 +11,7 @@ python3 "${CODEX_HOME:-$HOME/.codex}/skills/mysql-search/scripts/connections.py"
 python3 "${CODEX_HOME:-$HOME/.codex}/skills/mysql-search/scripts/connections.py" enable --connection bpm --env prod
 ```
 
-list 只展示连接名称、环境、通道、本机配置状态和数据库白名单，不展示 Host、账号或凭据。configured 表示本机配置已填写，不表示真实网络或权限已验证。migrate-op 保留旧文件与原钥匙串服务，不覆盖已有新配置；查询不自动执行迁移。停用连接后不得用旧配置绕过停用。
+list 只展示连接名称、环境、通道、本机配置状态、数据库白名单和业务库名提示（databaseHints），不展示 Host、账号或凭据。configured 表示本机配置已填写，不表示真实网络或权限已验证。migrate-op 保留旧文件与原钥匙串服务，不覆盖已有新配置；查询不自动执行迁移。停用连接后不得用旧配置绕过停用。
 
 BPM 首次登记可执行 init-bpm --connection bpm --env prod --database '<明确数据库名>'。仅生成 configured=false 的本机登记，不填地址/账号，不接触钥匙串，不覆盖已有文件。登记的唯一数据库后续 configure 不可静默改名。业务库名以本机登记为准。
 
