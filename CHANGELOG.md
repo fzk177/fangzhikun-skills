@@ -7,10 +7,12 @@
 ### 变更
 
 - `mysql-search` 升级至 2.4.1：OP dev 切换到新的测试库实例后，测试环境业务库名与生产不同（带测试前缀）。OP dev/pre 本机配置新增可选的 `databaseHints`（非秘密业务库名提示），`connections.py list` 会展示它，configure.sh 重新配置时保留。SKILL.md 明确：查询 dev/pre 前先按提示确认实际库名，不把生产库名直接套用到测试环境，也不自动改写 `--database`。
+- `server-connect` 升级至 1.1.0：支持 Windows 服务器（Windows OpenSSH + PowerShell，含 WSL），沉淀经 Tailscale 从 Mac 连接 Windows 的实践。本机注册表新增“平台”列并按平台分流参考文档；连通性检查由 `printf ready` 改为跨 shell 的 `echo ready`；新增 `references/windows.md`，覆盖 PowerShell 执行与编码、多层引号改用上传临时脚本、只读诊断、需授权动作、防止失联、重启前检查与 WSL 操作；`setup.md` 补充 Tailscale 排查与 Windows OpenSSH 初始化。安全边界新增“可能切断连接的变更须备份并以新连接验证”，并明确调用时点名的具体动作视为该动作的授权。新增平台能力并调整注册表格式，按 MINOR 升级。
 
 ### 影响与迁移
 
 - 该字段可选，只用于展示；不改变路由、白名单、只读策略或凭据存储，旧配置无需迁移。真实库名和实例地址只登记在本机配置，不进入公开仓库。
+- `server-connect`：旧注册表缺少“平台”列时按 `linux` 处理，现有 Linux 服务器无需迁移；登记 Windows 服务器需在本机注册表补充平台列。`log-search` 仅引用本 Skill 的登记职责，不受影响。
 
 ## 2026-11-02
 
