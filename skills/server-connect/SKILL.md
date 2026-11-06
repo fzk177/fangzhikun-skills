@@ -1,7 +1,7 @@
 ---
 name: server-connect
 description: 显式调用 $server-connect 时，通过已登记别名连接 Linux 或 Windows 服务器（含 Windows 上的 WSL），执行远程状态检查、服务故障排查和用户明确授权的运维操作；默认只读诊断，只有用户明确授权具体变更后才执行写操作。
-version: 1.1.0
+version: 1.1.1
 ---
 
 # 服务器连接与故障排查
@@ -34,7 +34,7 @@ version: 1.1.0
    ```
 
 3. 若别名不存在、认证失败或连接超时，完整读取 [references/setup.md](references/setup.md)，只报告具体阻塞点；不要索要或输出密码、私钥。
-4. 需要交互式终端时使用 `ssh <ssh别名>`；执行单个诊断命令时优先使用 `ssh <ssh别名> '<只读命令>'`，避免改变远端 shell 状态。命令语法必须与平台一致，Windows 不使用 `printf`、`grep` 等 Bash 命令。
+4. 需要交互式终端时使用 `ssh <ssh别名>`；执行单个诊断命令时优先使用 `ssh <ssh别名> '<只读命令>'`，避免改变远端 shell 状态。命令语法必须与平台一致，Windows 不使用 `printf`、`grep` 等 Bash 命令。Windows 远端命令含管道、方括号、嵌套引号或经 WSL 执行 Bash 时，按 [references/windows.md](references/windows.md) 的“执行方式”上传脚本执行，不内联拼接。
 5. 耗时较长的远端命令（安装、下载、等待重启恢复）在本机后台执行并保持 `ServerAliveInterval`，完成后核对结果，不以“已发起”代替“已完成”。
 6. 输出中明确写出逻辑服务器别名、平台和环境，不以 IP 代替服务器名称。
 

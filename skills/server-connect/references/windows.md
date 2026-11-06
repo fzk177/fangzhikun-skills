@@ -11,11 +11,23 @@
   ```
 
 - 输出含中文时，在命令开头加 `[Console]::OutputEncoding=[Text.Encoding]::UTF8;`；调用 `wsl.exe` 前再加 `$env:WSL_UTF8=1;`，否则输出为乱码或 UTF-16 空字符。
-- 多行逻辑、PowerShell 内再嵌套 Bash、或含多层引号时，不内联拼接：
-  1. 在本机 `mktemp -d` 目录中写好 `.ps1` 或 `.sh` 脚本。
-  2. 查询远端临时目录：`ssh <ssh别名> '$env:TEMP'`，在其下创建 `server-connect-<时间戳>` 子目录。
-  3. 用 `scp` 上传，PowerShell 脚本以 `powershell -NoProfile -ExecutionPolicy Bypass -File <路径>` 执行；Bash 脚本以 `wsl -d <发行版> -u <用户> -- bash /mnt/c/<对应路径>` 执行。
-  4. 执行完成后删除该临时子目录；脚本内容只包含本次已授权的动作。
+- 内联只用于单个、不含特殊字符的 PowerShell 命令（如 `'$env:TEMP'`、`'echo ready'`）。远端命令出现以下任一情况时，一律改用上传脚本，不尝试调整转义后再内联：
+  - 经 `wsl ... bash -lc "<命令>"` 执行 Bash，且命令含管道 `|`、`&&`、`||`、`;`、重定向或 `$`。
+  - 含 `[...]`（正则字符类、数组下标）、`{...}`、反引号或转义双引号 `\"`。
+  - 多行逻辑或需要两层以上引号。
+
+  原因：外层由 PowerShell 先解析，`bash -lc "..."` 内的 `\"` 不被 PowerShell 识别为转义，引号提前闭合后，`|` 会被当成 PowerShell 管道、`[A-Za-z]` 会被当成特性语法，报 `ParserError`、`CouldNotAutoLoadModule` 等错误。此时远端命令未执行，确认无副作用后改用脚本重试即可。
+- 上传脚本执行步骤：
+  1. 在本机 `mktemp -d` 目录中用 heredoc（`<<'EOF'`，带引号防止本机展开）写好 `.ps1` 或 `.sh` 脚本。
+  2. 远端临时目录使用正斜杠形式的固定路径 `C:/Users/<账号>/AppData/Local/Temp/server-connect-<时间戳>`；如需查询，在远端完成转换：`ssh <ssh别名> '$env:TEMP -replace "\\","/"'`，并去掉结尾的 `\r`。用 `New-Item -ItemType Directory -Path '<路径>'` 创建。
+  3. 用 `scp` 上传到 `<ssh别名>:<正斜杠路径>/`。PowerShell 脚本以 `powershell -NoProfile -ExecutionPolicy Bypass -File '<正斜杠路径>/<脚本>'` 执行；Bash 脚本以 `wsl -d <发行版> -u <用户> -- bash -l /mnt/c/<对应路径>` 执行，WSL 路径直接写成小写盘符加正斜杠，不在本机做反斜杠转换。
+  4. 执行完成后删除该临时子目录，并确认 `Test-Path` 为假；脚本内容只包含本次已授权的动作。
+- 本机拼接路径与脚本的陷阱：
+  - 本机为 zsh 时，`echo "C:\Users\..."` 会把 `\U`、`\t` 等当成转义字符，路径被破坏；macOS 自带的 BSD `sed` 不支持 `\L` 等大小写转换。Windows 路径在本机一律使用正斜杠，需要输出时用 `printf '%s\n'`。
+  - Windows PowerShell 5.1 把不带 BOM 的 `.ps1` 按系统 ANSI 代码页读取，脚本中的中文字符串或注释会导致 `TerminatorExpectedAtEndOfString` 等解析失败。`.ps1` 内只写 ASCII 文本；确需中文时写入带 BOM 的 UTF-8。
+  - PowerShell 双引号字符串中 `"$f:"` 会被解析为驱动器作用域变量而报错，写成 `"${f}:"`。
+  - Bash 脚本中 `cmd | grep ... | cut ... || echo 无结果` 的退出码取自最后一个命令，`||` 不会触发；需要“无结果”提示时先把结果存入变量再判断是否为空。
+  - 远端脚本输出的 grep 结果可能包含配置中的密码或 Token。搜索代理订阅、凭据文件等敏感配置时只匹配键名行（如 `^\s*ipv6\s*:`），不做宽泛关键字搜索。
 - 管理员账户的 OpenSSH 会话默认已提权，不弹 UAC；只读诊断同样不得借此执行写操作。
 - SSH 会话结束时，会话内启动的子进程通常一并结束；长任务在本机后台保持连接（`-o ServerAliveInterval=15`），不依赖 `Start-Process` 脱离会话。
 - 部分工具在非交互 SSH 会话中不可用：系统自带的 `wsl.exe` 引导程序（未安装 WSL 时）只提示安装、不执行 `--install`；Microsoft Store 安装可能失败。改用 `dism.exe /online /enable-feature ... /norestart` 和 `winget install --id <包> -e --silent --accept-source-agreements --accept-package-agreements --disable-interactivity`。
@@ -99,7 +111,7 @@ ssh <ssh别名> 'shutdown.exe /r /t 5 /c "<原因>"'
 
 ## WSL
 
-- 执行命令：`wsl -d <发行版> -u <用户> -- bash -lc '<命令>'`；需要 root 时用 `-u root`，不向用户索要 sudo 密码。
+- 执行命令：仅单个无特殊字符的命令可内联为 `wsl -d <发行版> -u <用户> -- <命令>`；含管道、引号、`$` 或多行时按“执行方式”上传 `.sh` 后用 `bash -l /mnt/c/<路径>` 执行。需要 root 时用 `-u root`，不向用户索要 sudo 密码。
 - 离线安装发行版：从 `https://raw.githubusercontent.com/microsoft/WSL/master/distributions/DistributionInfo.json` 取得 `.wsl` 镜像地址和 SHA256，下载并校验后执行 `wsl --install --from-file <文件> --name <名称> --no-launch`。
 - 常驻：`%USERPROFILE%\.wslconfig` 中 `[wsl2] vmIdleTimeout=-1`、`[general] instanceIdleTimeout=-1`；`/etc/wsl.conf` 中 `[boot] systemd=true`。修改后需 `wsl --shutdown` 生效。
 
@@ -107,6 +119,8 @@ ssh <ssh别名> 'shutdown.exe /r /t 5 /c "<原因>"'
 
 - `printf`、`grep` 等报“无法识别”：远端是 PowerShell，改用对应 cmdlet。
 - 中文输出乱码：见“执行方式”中的编码设置。
+- 内联命令报 `ParserError`、`EndSquareBracketExpectedAtEndOfAttribute`、`CouldNotAutoLoadModule`：命令被 PowerShell 抢先解析，远端未执行；按“执行方式”改用上传脚本，不反复调整转义。
+- 上传的 `.ps1` 报 `TerminatorExpectedAtEndOfString` 且错误位置在中文处：脚本缺少 BOM，改为纯 ASCII 或带 BOM 的 UTF-8。
 - 远端时钟偏差：`w32tm /resync /force` 属于变更，需授权。
 - 组网走中转、延迟高：远端组网流量可能被代理客户端的 TUN 模式转发到境外，无法打洞直连；需在代理规则中让组网客户端直连。
 - 本机开启组网客户端后代理失效：组网客户端接管了全部 DNS，本机执行 `tailscale set --accept-dns=false`（本机配置变更，需用户同意）。
