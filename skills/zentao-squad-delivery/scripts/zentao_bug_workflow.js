@@ -43,7 +43,7 @@ function validateComment(comment) {
 
 function parseArgs(argv) {
   const options = { ...defaultOptions(), apply: false };
-  const names = { '--bug': 'bugId', '--comment-file': 'commentFile', '--plan-hash': 'planHash', '--cli': 'cli', '--config': 'config' };
+  const names = { '--bug': 'bugId', '--comment-file': 'commentFile', '--plan-hash': 'planHash', '--story-zero-authorization': 'storyZeroAuthorization', '--cli': 'cli', '--config': 'config' };
   const seen = new Set();
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -57,6 +57,9 @@ function parseArgs(argv) {
   }
   if (options.help) return options;
   if (!/^[1-9]\d*$/.test(options.bugId || '')) throw new Error('--bug 必须为正整数 ID');
+  if (options.storyZeroAuthorization && !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(options.storyZeroAuthorization)) {
+    throw new Error('--story-zero-authorization 必须为已核实的成员授权评论 UUID');
+  }
   if (!options.commentFile) throw new Error('必须提供 --comment-file <UTF-8四段备注文件>');
   options.comment = fs.readFileSync(options.commentFile, 'utf8').replace(/\r\n/g, '\n').trim();
   validateComment(options.comment);
@@ -78,13 +81,24 @@ function readBug(options) {
   return { bug, actions };
 }
 
+// 明确的 0 表示未关联需求；缺失、布尔值、非法编号不能被转换为 0。
+function storyId(value) {
+  const id = value && typeof value === 'object' && !Array.isArray(value)
+    ? value.id ?? value.value : value;
+  if (typeof id === 'number') return Number.isSafeInteger(id) && id >= 0 ? String(id) : '';
+  if (typeof id !== 'string') return '';
+  const text = id.trim();
+  return /^(0|[1-9]\d*)$/.test(text) ? text : '';
+}
+
 function snapshot(bug) {
   const fields = ['id', 'title', 'status', 'story', 'openedBy', 'openedDate', 'assignedTo',
     'resolution', 'resolvedBuild', 'resolvedBy', 'resolvedDate', 'lastEditedBy', 'lastEditedDate',
     'deleted', 'product', 'project', 'execution', 'module', 'steps', 'type', 'severity', 'pri'];
   const result = Object.fromEntries(fields.map(field => [field, bug[field] ?? null]));
   for (const field of ['openedBy', 'assignedTo', 'resolvedBy', 'lastEditedBy']) result[field] = accountValue(bug[field]);
-  for (const field of ['id', 'story', 'product', 'project', 'execution', 'module']) result[field] = objectId(bug[field]);
+  for (const field of ['id', 'product', 'project', 'execution', 'module']) result[field] = objectId(bug[field]);
+  result.story = storyId(bug.story);
   return result;
 }
 
@@ -100,14 +114,19 @@ function buildPlan(options) {
   const blockers = [];
   if (source.status !== 'active') blockers.push(`Bug 当前状态为 ${source.status || '未知'}，仅 active 可解决`);
   if (!/^[A-Za-z0-9_.@-]+$/.test(source.openedBy) || source.openedBy === 'closed') blockers.push('未取得有效创建人 openedBy');
-  if (!/^[1-9]\d*$/.test(source.story)) blockers.push('未取得真实关联需求，万事屋指令禁止提交此 Bug');
+  const storyZeroAuthorization = options.storyZeroAuthorization || null;
+  if (storyZeroAuthorization && source.story !== '0') blockers.push('story#0 例外仅适用于远端明确返回 story=0 的 Bug');
+  if (!/^(0|[1-9]\d*)$/.test(source.story)) {
+    blockers.push('Bug 的 story 字段缺失或无效，不能推断为 story#0');
+  }
   if (bug.deleted === true || String(bug.deleted) === '1') blockers.push('Bug 已删除');
   if (actions.some(action => String(action.comment || '').trim() === options.comment)) blockers.push('历史已存在本次备注，禁止重复解决或备注');
   const data = { resolution: 'fixed', resolvedBuild: 'trunk', assignedTo: source.openedBy, comment: options.comment };
   const plan = {
-    version: 1, caller: CALLER, action: 'resolve', bugId: options.bugId,
+    version: 2, caller: CALLER, action: 'resolve', bugId: options.bugId,
+    storyPolicy: 'remote-bug-story',
     transport: { cli: options.cli, config: path.resolve(options.config), profile },
-    source, historyHash: digest(actions), historyIds: actions.map(action => String(action.id)),
+    source, storyZeroAuthorization, historyHash: digest(actions), historyIds: actions.map(action => String(action.id)),
     target: { status: 'resolved', ...data }, data, blockers,
   };
   return { ...plan, hash: digest(plan) };
@@ -191,6 +210,8 @@ function main() {
     console.log('仅供 zentao-squad-delivery 的 Bug 分支使用。\n'
       + '预览：zentao_bug_workflow.js --bug <ID> --comment-file <UTF-8文件> [--cli <文件>] [--config <文件>] --json\n'
       + '执行：相同参数追加 --apply --plan-hash <完整64位哈希>\n'
+      + 'Story 使用 Bug 实际关联；明确的 0 自动按 story#0 处理，缺失或无效值仍阻断。\n'
+      + '旧 --story-zero-authorization <评论UUID> 仅保留兼容，不再必需，不能覆盖远端 Story。\n'
       + '仅 fixed/trunk/创建人/四段备注；任何写入或回读失败即停，不重试。');
     return;
   }
