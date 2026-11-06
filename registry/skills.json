@@ -59,11 +59,11 @@
       "dependencies": []
     },
     "skill-manager": {
-      "version": "1.4.0",
+      "version": "1.5.0",
       "ownership": "first-party",
       "source": "skills/skill-manager",
       "target": "codex",
-      "dependencies": []
+      "dependencies": ["server-connect"]
     },
     "vesselhub-problem-analyze": {
       "version": "2.5.0",

@@ -7,7 +7,20 @@
     "keychainService": "zentao-cli"
   },
   "skillManager": {
-    "repository": "/absolute/path/to/fangzhikun-skills"
+    "repository": "/absolute/path/to/fangzhikun-skills",
+    "remoteHosts": [
+      {
+        "name": "example-windows",
+        "sshAlias": "example-win-host",
+        "platform": "windows",
+        "wsl": {
+          "distro": "Ubuntu",
+          "user": "example-user"
+        },
+        "repository": "/home/example-user/path/to/fangzhikun-skills",
+        "targets": ["codex", "claude"]
+      }
+    ]
   },
   "logSearch": {
     "dev": {

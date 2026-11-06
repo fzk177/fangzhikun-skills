@@ -4,13 +4,18 @@
 
 ## 2026-11-06
 
+### 变更
+
+- `skill-manager` 升级至 1.5.0：新增“远端主机同步”。本机 `runtime.json` 的 `skillManager.remoteHosts` 可登记远端主机（如 Windows 工作机的 WSL），这些主机各自保存一份仓库，用远端本地的 `skillctl` 部署 Codex 原版和生成 Claude 副本，漂移保护、备份和计划哈希与本机一致；Claude 副本含按主目录生成的绝对路径，禁止直接复制本机安装目录。部署预览合并列出本机与各远端主机的待同步内容和阻塞，一次部署确认同时覆盖两者；远端阻塞只停止该主机，不回退本机部署。远端仅允许 `git merge --ff-only` 快进到本机已推送的提交，不执行 pull、reset 或 force-initial；首次接入（克隆仓库、写远端配置、接管已有安装）、远端回滚与远端漂移接管需单独确认。Windows 远端命令复用 `server-connect` 的脚本执行规范，注册表新增对 `server-connect` 的依赖；配置示例增加 `remoteHosts` 占位。新增重要能力并调整部署流程与确认边界，按 MINOR 升级。
+
 ### 修复
 
 - `server-connect` 升级至 1.1.1：沉淀 Windows 远端内联命令失败的处理经验。明确只有单个无特殊字符的 PowerShell 命令可内联，含管道、方括号、嵌套引号或经 WSL 执行 Bash 时一律上传脚本；补充上传执行的标准步骤（正斜杠远端路径、固定 `/mnt/c` WSL 路径、执行后确认清理），以及本机 zsh `echo` 转义 Windows 路径、BSD `sed` 不支持 `\L`、PowerShell 5.1 读取无 BOM 中文 `.ps1` 解析失败、`"$f:"` 变量写法、管道退出码与敏感配置宽泛搜索等陷阱；常见问题新增对应报错的判断方法。SKILL.md 连接流程增加指向该规则的说明。仅补充执行规范，不改变权限边界和注册表格式。
 
 ### 影响与迁移
 
-- 无需迁移。已有本机注册表和 SSH 配置不受影响。
+- `server-connect`：无需迁移，已有本机注册表和 SSH 配置不受影响。
+- `skill-manager`：未登记 `remoteHosts` 时行为与 1.4.0 相同。启用远端同步需在本机配置登记远端主机，并按“首次接入”在远端克隆仓库、写入远端 `runtime.json` 的 `skillManager.repository` 并接管已有安装；部署后需新建会话验证新版本。
 
 ## 2026-11-05
 

@@ -194,6 +194,49 @@ git rev-parse '@{upstream}'
 
 部署后报告版本、安装路径、部署时间和备份位置。当前会话不会自动重新加载 Skill；需要新建会话验证新版本。
 
+本机配置登记了远端主机时，部署同时包含下节的远端主机同步；只部署本机而遗漏已登记远端主机，视为部署未完成。
+
+## 远端主机同步
+
+远端主机（如个人 Windows 工作机的 WSL）各自保存一份本仓库，用远端本地的 `skillctl` 部署 Codex 原版和生成 Claude 副本。Claude 副本含有按本机主目录生成的绝对路径，禁止把 Mac 的安装目录直接复制到远端。
+
+### 登记
+
+远端主机只登记在本机 `runtime.json` 的 `skillManager.remoteHosts`，字段含义见 `config/examples/runtime.example.json`：`name`、`sshAlias`、`platform`（`windows` 或 `linux`）、Windows 的 `wsl.distro` 与 `wsl.user`、远端环境中的 `repository` 绝对路径，以及需要维护的 `targets`（`codex`、`claude`）。未登记时只处理本机，不从 SSH 配置或历史对话猜测远端主机。公开仓库只使用占位示例。
+
+### 执行方式
+
+- 连接前先执行 `ssh -o BatchMode=yes -o ConnectTimeout=8 <sshAlias> 'echo ready'`。
+- `platform` 为 `windows` 时，远端命令遵循 [server-connect 的 Windows 执行方式](../../server-connect/references/windows.md)：在本机临时目录写脚本、上传到远端临时目录，用 `wsl -d <distro> -u <user> -- bash -l /mnt/c/<路径>` 执行，执行后删除临时目录；不内联拼接含管道、引号或 `$` 的命令。
+- 远端只运行仓库内 `tools/skillctl` 与只读 Git 命令，以及确认后的 `git merge --ff-only`；不执行 `pull`、`reset`、`checkout`、`clean` 或 `--force-initial`（首次接入除外）。
+
+### 部署预览（与本机部署预览合并）
+
+本机推送完成、远端 GitHub 校验通过后，对每台已登记远端主机只读收集：
+
+1. 连通性；远端仓库路径与远端 `runtime.json` 的 `skillManager.repository` 一致。
+2. `git status --short --branch` 无未提交修改；`git fetch origin <分支>` 后，远端 `HEAD` 是本机已推送目标提交的祖先或与其相同。
+3. 在远端临时工作树（`git worktree add --detach <临时目录> <目标提交>`）或快进后的仓库中执行 `skillctl status`、`skillctl claude-status`，得到待部署 Skill、版本和漂移状态；`claude-sync <skill>` 预览得到远端计划哈希。使用临时工作树时预览完成后移除该工作树。
+
+部署预览中按主机分别列出：目标提交、远端当前 `HEAD`、将部署的 Codex Skill 与版本、Claude 同步计划哈希，以及不可达、工作区不干净、无法快进或人工漂移等阻塞。用户对这份预览的部署确认同时覆盖本机和其中列出的远端动作。
+
+### 执行与验证
+
+1. 本机部署完成后，远端执行 `git merge --ff-only <目标提交>`，再执行目标 Skill 校验。
+2. 按预览逐个执行 `skillctl deploy <skill>`；Claude 端用 `claude-sync <skill> --apply --plan-hash <预览哈希>`，存在依赖时先同步依赖。执行时计划哈希与预览不一致即停止并重新预览。
+3. 完成后执行 `skillctl status --all` 和 `claude-status --all`，报告每台主机的版本、部署时间与备份位置。
+
+远端任一阻塞只停止该主机的后续动作，不回退已完成的本机部署；汇报时明确哪些主机已同步、哪些未同步及原因。远端人工漂移按“安装目录漂移”在远端导出审阅，不用本机结果覆盖。Obsidian 文档只在本机核对，远端不涉及。远端回滚是独立动作，需在远端用 `skillctl rollback` 或 `claude-rollback` 单独预览和确认。
+
+### 首次接入
+
+远端尚无仓库或部署记录时，首次接入需单独预览和确认，因为它会修改远端真实配置并接管已有安装目录：
+
+1. 在登记的 `repository` 路径克隆本仓库，切到本机已推送的同一提交。
+2. 在远端 `runtime.json` 中只新增或更新 `skillManager.repository`，保持目录权限 `700`、文件权限 `600`，不复制本机其他配置。
+3. 对已存在但无部署记录的安装目录，逐个与目标源码比较：内容一致（`SKILL.md` 版本号外）或仅差运行缓存时，展示差异摘要后用 `deploy --force-initial` 接管；存在其他差异时按人工漂移处理，停在该 Skill 并询问归属。
+4. Claude 副本按 `claude-status --all` 的结果处理，未登记或不一致的已有目录同样先审阅差异，不直接覆盖。
+
 ## 回滚
 
 先从 `~/.local/state/fangzhikun-skills/backups/<skill-name>/` 读取可用备份目录、时间和文件哈希，只展示候选摘要。明确用户选择后执行：
