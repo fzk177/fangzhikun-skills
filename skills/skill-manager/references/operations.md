@@ -222,20 +222,26 @@ git rev-parse '@{upstream}'
 
 ### 执行与验证
 
-1. 本机部署完成后，远端执行 `git merge --ff-only <目标提交>`，再执行目标 Skill 校验。
+1. 本机部署完成后，远端执行 `git merge --ff-only <目标提交>`，再执行目标 Skill 校验，并执行 `tools/skilldocs sync --apply` 与 `tools/skilldocs check` 刷新远端文档镜像（见下文“远端文档镜像”）。
 2. 按预览逐个执行 `skillctl deploy <skill>`；Claude 端用 `claude-sync <skill> --apply --plan-hash <预览哈希>`，存在依赖时先同步依赖。执行时计划哈希与预览不一致即停止并重新预览。
-3. 完成后执行 `skillctl status --all` 和 `claude-status --all`，报告每台主机的版本、部署时间与备份位置。
+3. 完成后执行 `skillctl status --all`，Claude 端逐个执行 `claude-status <skill>`（存在未受管目录时 `claude-status --all` 会在第一个未受管目录处报错退出），报告每台主机的版本、部署时间与备份位置。
 
-远端任一阻塞只停止该主机的后续动作，不回退已完成的本机部署；汇报时明确哪些主机已同步、哪些未同步及原因。远端人工漂移按“安装目录漂移”在远端导出审阅，不用本机结果覆盖。Obsidian 文档只在本机核对，远端不涉及。远端回滚是独立动作，需在远端用 `skillctl rollback` 或 `claude-rollback` 单独预览和确认。
+远端某个 Skill 因漂移暂不同步时，`claude-sync --all` 需用 `--exclude` 同时排除它及依赖它的 Skill（按注册表 `dependencies` 逐层查找），否则同步会因依赖未同步而停止。
+
+远端任一阻塞只停止该主机的后续动作，不回退已完成的本机部署；汇报时明确哪些主机已同步、哪些未同步及原因。远端人工漂移按“安装目录漂移”在远端导出审阅，不用本机结果覆盖。远端回滚是独立动作，需在远端用 `skillctl rollback` 或 `claude-rollback` 单独预览和确认。
+
+### 远端文档镜像
+
+`claude-sync --apply` 写入前必定执行全量 `skilldocs check`，远端没有 Obsidian 库时检查会失败。远端 `runtime.json` 的 `skillManager.obsidianDocsRoot` 指向远端本机的文档镜像目录（如 `~/.local/share/fangzhikun-skills/obsidian-docs-mirror`，权限 `700`），每次快进后用 `skilldocs sync --apply` 从远端仓库刷新。镜像只用于通过检查，不作为编辑入口，不手工修改；文档的人工编辑仍只在本机 Obsidian 中进行。禁止沿用本机配置中指向本机 Obsidian 的路径。
 
 ### 首次接入
 
 远端尚无仓库或部署记录时，首次接入需单独预览和确认，因为它会修改远端真实配置并接管已有安装目录：
 
 1. 在登记的 `repository` 路径克隆本仓库，切到本机已推送的同一提交。
-2. 在远端 `runtime.json` 中只新增或更新 `skillManager.repository`，保持目录权限 `700`、文件权限 `600`，不复制本机其他配置。
-3. 对已存在但无部署记录的安装目录，逐个与目标源码比较：内容一致（`SKILL.md` 版本号外）或仅差运行缓存时，展示差异摘要后用 `deploy --force-initial` 接管；存在其他差异时按人工漂移处理，停在该 Skill 并询问归属。
-4. Claude 副本按 `claude-status --all` 的结果处理，未登记或不一致的已有目录同样先审阅差异，不直接覆盖。
+2. 备份远端 `runtime.json` 后，只新增或更新 `skillManager.repository` 和 `skillManager.obsidianDocsRoot`（指向远端文档镜像），保持文件权限 `600`，不复制本机其他配置；随后执行 `skilldocs sync --apply` 建立镜像。
+3. Codex 端：对已存在但无部署记录的安装目录，逐个与目标源码比较（忽略 `SKILL.md` 版本行和 `__pycache__`）。与当前源码一致，或与当前 `HEAD` 某个祖先提交中的该 Skill 完全一致（未更新的旧发布版本）时，展示差异摘要后用 `deploy --force-initial` 接管，`deploy` 会把原目录保存到部署备份；存在其他差异时按人工漂移处理，停在该 Skill 并询问归属。
+4. Claude 端：`claude-sync` 不覆盖未受管的已有目录。先在隔离环境中生成标准副本作比较：把 `XDG_STATE_HOME`、`CLAUDE_CONFIG_DIR` 指向临时目录，`FANGZHIKUN_SKILLS_CONFIG` 指向把 `obsidianDocsRoot` 改为临时镜像的配置副本，执行 `skilldocs sync --apply` 与 `claude-sync --apply`，再与远端现有副本逐文件比较。完全一致或仅为旧发布版本升级的，把原目录移入 `~/.local/state/fangzhikun-skills/manual-takeover/claude-<日期>/` 后执行真实的 `claude-sync`；存在其他差异的保持不动并询问归属。不处理 `synced` 等非本仓库目录。
 
 ## 回滚
 

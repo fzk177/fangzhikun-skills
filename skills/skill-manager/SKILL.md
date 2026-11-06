@@ -1,7 +1,7 @@
 ---
 name: skill-manager
 description: 仅在用户显式调用 $skill-manager 时，以自然语言管理 fangzhikun-skills 中已登记的自研 Skill，执行状态检查、源码更新、版本与变更记录维护、静态校验，以及当前或已提交祖先源码基线的已审阅漂移接管，并在逐项确认后完成 Git 提交、GitHub 推送、本机及已登记远端主机（如 Windows WSL）的部署或回滚。
-version: 1.5.0
+version: 1.5.1
 ---
 
 # Skill 管理

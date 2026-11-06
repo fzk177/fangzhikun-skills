@@ -10,6 +10,7 @@
 
 ### 修复
 
+- `skill-manager` 升级至 1.5.1：按 Windows WSL 首次接入的实际执行修正“远端主机同步”。`claude-sync` 写入前必定做全量 Obsidian 文档检查，远端改用本机文档镜像（`obsidianDocsRoot` 指向远端镜像目录，每次快进后 `skilldocs sync --apply` 刷新），删除“远端不涉及 Obsidian”的错误描述；首次接入时 Codex 端允许接管与祖先提交一致的旧发布版本，Claude 端先在隔离环境生成标准副本比对，一致的原目录移入 manual-takeover 备份后再同步；远端存在漂移的 Skill 需连同其依赖方一并 `--exclude`，存在未受管目录时逐个执行 `claude-status`。
 - `server-connect` 升级至 1.1.1：沉淀 Windows 远端内联命令失败的处理经验。明确只有单个无特殊字符的 PowerShell 命令可内联，含管道、方括号、嵌套引号或经 WSL 执行 Bash 时一律上传脚本；补充上传执行的标准步骤（正斜杠远端路径、固定 `/mnt/c` WSL 路径、执行后确认清理），以及本机 zsh `echo` 转义 Windows 路径、BSD `sed` 不支持 `\L`、PowerShell 5.1 读取无 BOM 中文 `.ps1` 解析失败、`"$f:"` 变量写法、管道退出码与敏感配置宽泛搜索等陷阱；常见问题新增对应报错的判断方法。SKILL.md 连接流程增加指向该规则的说明。仅补充执行规范，不改变权限边界和注册表格式。
 
 ### 影响与迁移
