@@ -22,6 +22,8 @@ ssh -G <本机已登记别名> | rg '^(hostname|user|identityfile|identitiesonly
 ssh -o BatchMode=yes -o ConnectTimeout=8 <本机已登记别名> 'echo ready'
 ```
 
+用户明确提供更新后的登录密码时，macOS 上按主机与账号保存在本机登录钥匙串，注册表只记条目名和账号。区分“本机保存并核对”与“远端登录验证成功”。主机指纹异常时先通过云控制台或管理员独立核验，核验前停止连接。
+
 ## 新增连接
 
 用户明确要求配置时，先检查已有 Host 块，避免覆盖或创建冲突别名。真实配置只写入本机 `~/.ssh/config`，修改前备份，格式示例：

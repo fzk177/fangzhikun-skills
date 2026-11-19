@@ -1,7 +1,7 @@
 ---
 name: server-connect
 description: 显式调用 $server-connect 时，通过已登记别名连接 Linux 或 Windows 服务器（含 Windows 上的 WSL），执行远程状态检查、服务故障排查和用户明确授权的运维操作；默认只读诊断，只有用户明确授权具体变更后才执行写操作。
-version: 1.1.1
+version: 1.1.2
 ---
 
 # 服务器连接与故障排查
@@ -9,7 +9,7 @@ version: 1.1.1
 ## 启用条件
 
 - 仅在用户显式调用 `$server-connect` 或明确要求使用本 skill 时启用。
-- 接受服务器标准别名和已登记的中文别名。先从 [references/servers.md](references/servers.md) 精确解析目标，不根据模糊描述猜测主机。
+- 接受标准别名、中文称呼和已登记的环境简称。用户询问环境如何称呼时，按本机注册表列出日常称呼、SSH 别名和承载的业务环境。先从 [references/servers.md](references/servers.md) 精确解析目标，不根据模糊描述猜测主机。
 - 真实服务器只登记在本机注册表；后续服务器按参考中的登记规则扩展，不把临时主机直接写入执行命令。
 - 注册表的“平台”决定远端命令语法和参考文档：`linux` 使用 Bash 和 [references/troubleshooting.md](references/troubleshooting.md)；`windows` 使用 PowerShell，并在执行任何远端命令前完整读取 [references/windows.md](references/windows.md)。未登记平台时按 `linux` 处理，连通性检查结果与之矛盾时停止并请用户补登。
 
